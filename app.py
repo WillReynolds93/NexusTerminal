@@ -292,7 +292,7 @@ with tab1:
     components.html(tv_html, height=570)
 
 # ==========================================
-# TAB 02: AI SETUP MATRIX (WITH INSTANT ONE-CLICK EXECUTION)
+# TAB 02: AI SETUP MATRIX (WITH DYNAMIC RISK-SIZED ONE-CLICK EXECUTION)
 # ==========================================
 with tab2:
     st.subheader("🎯 Real-Time AI Trade Signals & Confluence Matrix")
@@ -331,10 +331,10 @@ with tab2:
         else:
             st.warning("No setups match your filter criteria.")
             raw_ticker = "NVDA"
-            selected_row = {"Entry": 128.50, "Stop Loss": 125.00, "Target": 139.70, "Pattern": "Donchian Breakout", "Rationale": "Fallback signal.", "Action": "BUY", "Horizon": "15m Scalp"}
+            selected_row = {"Entry": 128.50, "Stop Loss": 125.00, "Target": 139.70, "Pattern": "Donchian Breakout", "Rationale": "Fallback signal.", "Action": "BUY", "Horizon": "15m Scalp", "Confidence (%)": 85}
     else:
         raw_ticker = "NVDA"
-        selected_row = {"Entry": 128.50, "Stop Loss": 125.00, "Target": 139.70, "Pattern": "Donchian Breakout", "Rationale": "Fallback signal.", "Action": "BUY", "Horizon": "15m Scalp"}
+        selected_row = {"Entry": 128.50, "Stop Loss": 125.00, "Target": 139.70, "Pattern": "Donchian Breakout", "Rationale": "Fallback signal.", "Action": "BUY", "Horizon": "15m Scalp", "Confidence (%)": 85}
 
     selected_ticker = get_clean_symbol(raw_ticker)
     st.divider()
@@ -370,6 +370,8 @@ with tab2:
     e_val = float(selected_row.get("Entry", 128.50))
     sl_val = float(selected_row.get("Stop Loss", 125.00))
     tp_val = float(selected_row.get("Target", 139.70))
+    conf_score = int(selected_row.get("Confidence (%)", 85))
+    
     sl_pct = ((e_val - sl_val) / e_val) * 100.0 if e_val > 0 else 0
     tp_pct = ((tp_val - e_val) / e_val) * 100.0 if e_val > 0 else 0
     supp_val = round(e_val * 0.97, 2)
@@ -384,39 +386,44 @@ with tab2:
 
     st.divider()
 
-    # --- ONE-CLICK INSTANT TRADE EXECUTION PANEL ---
-    st.markdown(f"### ⚡ One-Click Instant Execution Panel: **{selected_ticker}**")
+    # --- ONE-CLICK INSTANT TRADE EXECUTION PANEL WITH DYNAMIC RISK SIZER ---
+    st.markdown(f"### ⚡ AI-Recommended Dynamic Bracket Order: **{selected_ticker}**")
     
     trade_side = str(selected_row.get("Action", "BUY")).upper()
     trade_horizon = str(selected_row.get("Horizon", "15m Scalp"))
     pattern_name = str(selected_row.get("Pattern", "Donchian Breakout"))
     
-    col_ex1, col_ex2, col_ex3 = st.columns([1, 1, 1.5])
+    # Calculate Dynamic AI Lot Size based on $2000 Risk Scaled by Confidence Score
+    risk_dist = abs(e_val - sl_val) if abs(e_val - sl_val) > 0 else (e_val * 0.02)
+    base_risk_budget = 2000.0 * (conf_score / 100.0)
+    recommended_qty = max(1.0, round(base_risk_budget / risk_dist, 2))
+    
+    col_ex1, col_ex2, col_ex3 = st.columns([1, 1.2, 1.5])
     
     with col_ex1:
-        trade_qty = st.number_input("Shares / Units Quantity:", min_value=1.0, value=10.0, step=1.0, key="ai_matrix_qty")
-        trade_risk = abs(e_val - sl_val) * trade_qty
-        st.caption(f"Estimated Risk: **${trade_risk:,.2f}**")
+        trade_qty = st.number_input("Shares / Quantity (AI Recommended):", min_value=0.01, value=float(recommended_qty), step=1.0, key="ai_matrix_qty")
+        actual_risk = risk_dist * trade_qty
+        st.caption(f"Confidence: **{conf_score}%** | Scaled Risk: **${actual_risk:,.2f}**")
         
     with col_ex2:
         st.write(" ")
         st.write(" ")
         st.markdown(f"**Side:** `<b style='color:#00E676;'>{trade_side}</b>`", unsafe_allow_html=True)
-        st.markdown(f"**Pattern:** {pattern_name}")
+        st.markdown(f"**Bracket SL / TP:** `${sl_val:,.2f}` / `${tp_val:,.2f}`")
         
     with col_ex3:
         st.write(" ")
         st.write(" ")
-        exec_btn_label = f"🚀 EXECUTE {trade_side} {trade_qty:.0f} {selected_ticker} @ ${e_val:,.2f}"
+        exec_btn_label = f"🚀 EXECUTE {trade_side} {trade_qty:.2f} {selected_ticker} @ ${e_val:,.2f}"
         if st.button(exec_btn_label, type="primary", use_container_width=True, key="ai_matrix_exec_btn"):
             res = engine.execute_bracket_order(
-                ticker=raw_ticker,
-                qty=trade_qty,
-                side=trade_side,
-                entry=e_val,
-                target=tp_val,
-                stop_loss=sl_val,
-                horizon=trade_horizon
+                raw_ticker,
+                trade_qty,
+                trade_side,
+                e_val,
+                tp_val,
+                sl_val,
+                trade_horizon
             )
             st.success(f"✅ Trade Executed! {res.get('message', 'Bracket order dispatched and logged to Neon Postgres.')}")
 
@@ -642,7 +649,7 @@ with tab5:
     # VISUAL BREAKING NEWS CARDS
     with t_flow4:
         st.markdown("### 📰 Sector-Sorted Live News Wire & Visual Story Cards")
-        news_cat = st.radio("Filter News Sector:", ["🔥 All News", "💻 Tech & Semiconductors", "🪙 Crypto & Digital Assets", "🛢️ Commodities & Energy", "🏛️️ Central Banks & Macro Policy"], horizontal=True)
+        news_cat = st.radio("Filter News Sector:", ["🔥 All News", "💻 Tech & Semiconductors", "🪙 Crypto & Digital Assets", "🛢️ Commodities & Energy", "🏛 Central Banks & Macro Policy"], horizontal=True)
         st.divider()
 
         news_stories = [
