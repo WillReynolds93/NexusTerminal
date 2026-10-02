@@ -4,6 +4,8 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 import json
+import os
+import psycopg2
 from datetime import datetime, timedelta
 import streamlit.components.v1 as components
 from db import CloudDatabaseManager
@@ -19,6 +21,18 @@ st.set_page_config(
 
 # --- INITIALIZE DATABASE ---
 CloudDatabaseManager.initialize_tables()
+
+# --- DATABASE CONNECTION HELPER ---
+def get_db_conn():
+    db_url = st.secrets.get("DATABASE_URL", os.environ.get("DATABASE_URL", ""))
+    if db_url:
+        if "channel_binding=" in db_url:
+            db_url = db_url.replace("&channel_binding=require", "").replace("?channel_binding=require", "")
+        try:
+            return psycopg2.connect(db_url)
+        except Exception:
+            return None
+    return None
 
 # --- UNIVERSAL SYMBOL & LOGO HELPERS ---
 def get_clean_symbol(ticker):
@@ -369,13 +383,41 @@ with tab2:
     c_l5.markdown(f"<div class='level-card'><span style='color:#F59E0B;'>KEY RESISTANCE</span><br><b>${resist_val:,.2f}</b></div>", unsafe_allow_html=True)
 
 # ==========================================
-# TAB 03: PORTFOLIO & EXECUTION
+# TAB 03: PORTFOLIO & EXECUTION (WITH DEMO ACCOUNT DB METRICS)
 # ==========================================
 with tab3:
-    st.subheader("⚡ Portfolio Allocation & Bracket Order Engine")
+    st.subheader("⚡ Autonomous Demo Portfolio & Bracket Order Engine")
+
+    # Fetch Real Positions from Neon Postgres Database
+    conn = get_db_conn()
+    positions_df = pd.DataFrame()
+    if conn:
+        try:
+            positions_df = pd.read_sql("SELECT * FROM demo_positions ORDER BY opened_at DESC;", conn)
+            conn.close()
+        except Exception:
+            positions_df = pd.DataFrame()
+
+    open_trades = positions_df[positions_df['status'] == 'OPEN'] if not positions_df.empty and 'status' in positions_df.columns else pd.DataFrame()
+    closed_trades = positions_df[positions_df['status'] == 'CLOSED'] if not positions_df.empty and 'status' in positions_df.columns else pd.DataFrame()
+
+    total_realized_pnl = closed_trades['pnl'].sum() if not closed_trades.empty and 'pnl' in closed_trades.columns else 0.0
+    win_count = len(closed_trades[closed_trades['pnl'] > 0]) if not closed_trades.empty and 'pnl' in closed_trades.columns else 0
+    total_closed = len(closed_trades)
+    win_rate = (win_count / total_closed * 100) if total_closed > 0 else 0.0
+
+    # Live Database Portfolio Metrics Overview Bar
+    pm1, pm2, pm3, pm4 = st.columns(4)
+    pm1.metric("REALIZED DEMO P&L", f"${total_realized_pnl:,.2f}", delta=f"${total_realized_pnl:,.2f}" if total_realized_pnl != 0 else None)
+    pm2.metric("ACTIVE OPEN TRADES", len(open_trades))
+    pm3.metric("CLOSED TRADES LOGGED", total_closed)
+    pm4.metric("STRATEGY WIN RATE", f"{win_rate:.1f}%")
+
+    st.divider()
+
     col_p1, col_p2 = st.columns([1.2, 1])
     with col_p1:
-        st.markdown("### 📊 Active Portfolio Equity Breakdown")
+        st.markdown("### 📊 Portfolio Asset Class Allocation")
         df_port = pd.DataFrame({
             "Asset": ["NVDA (Tech)", "BTC-USD (Crypto)", "Gold (GC=F)", "SPY (S&P 500)", "USD Cash"],
             "Value": [35000, 25000, 20000, 10000, 10000]
@@ -396,6 +438,30 @@ with tab3:
             res = engine.execute_bracket_order(exec_ticker, exec_qty, exec_side, exec_entry, exec_tp, exec_sl, "SCALP")
             st.success(f"Execution Logged: {res.get('message', 'Trade sent to Neon Cloud Database!')}")
 
+    st.divider()
+
+    # Active Positions Table (From Neon Postgres DB)
+    st.markdown("### 🟢 Active Open Demo Positions")
+    if not open_trades.empty:
+        open_display = open_trades.copy()
+        open_display['ticker'] = open_display['ticker'].apply(lambda x: get_clean_symbol(x))
+        open_cols = [c for c in ['opened_at', 'ticker', 'action', 'qty', 'entry_price', 'stop_loss', 'take_profit', 'status'] if c in open_display.columns]
+        st.markdown(render_styled_table(open_display[open_cols], ticker_col="ticker"), unsafe_allow_html=True)
+    else:
+        st.info("No open trades currently active. The background cloud scanner will open demo positions when high-confidence setups trigger.")
+
+    st.divider()
+
+    # Closed Trades History Table (From Neon Postgres DB)
+    st.markdown("### 📜 Executed Trade History & Realized P&L")
+    if not closed_trades.empty:
+        closed_display = closed_trades.copy()
+        closed_display['ticker'] = closed_display['ticker'].apply(lambda x: get_clean_symbol(x))
+        closed_cols = [c for c in ['closed_at', 'ticker', 'action', 'qty', 'entry_price', 'exit_price', 'pnl'] if c in closed_display.columns]
+        st.markdown(render_styled_table(closed_display[closed_cols], ticker_col="ticker"), unsafe_allow_html=True)
+    else:
+        st.caption("No closed trades logged yet.")
+
 # ==========================================
 # TAB 04: QUANT BACKTESTER
 # ==========================================
@@ -413,7 +479,7 @@ with tab4:
         st.line_chart(sim_paths)
 
 # ==========================================
-# TAB 05: RESEARCH & MACRO FLOW (INCLUDES SEC WIRE & BIG MOVERS)
+# TAB 05: RESEARCH & MACRO FLOW
 # ==========================================
 with tab5:
     st.subheader("🐋 Institutional Research: Deep Dive, Big Movers, SEC Wire & Macro Flow")
