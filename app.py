@@ -6,6 +6,7 @@ import plotly.express as px
 import json
 import os
 import psycopg2
+import yfinance as yf
 from datetime import datetime, timedelta
 import streamlit.components.v1 as components
 from db import CloudDatabaseManager
@@ -144,12 +145,54 @@ if not st.session_state.authenticated:
     render_login()
     st.stop()
 
-# --- INITIALIZE ENGINES ---
+# --- INITIALIZE ENGINES & WATCHLIST ---
 engine = BrokerExecutionEngine()
 health = engine.check_account_health()
 wl_items = CloudDatabaseManager.get_watchlist()
 if not wl_items:
     wl_items = ["NVDA", "BTC-USD", "GC=F", "SPY"]
+
+# --- DYNAMIC MARK-TO-MARKET ACCOUNT CALCULATIONS ---
+conn = get_db_conn()
+positions_df = pd.DataFrame()
+if conn:
+    try:
+        positions_df = pd.read_sql("SELECT * FROM demo_positions ORDER BY opened_at DESC;", conn)
+        conn.close()
+    except Exception:
+        positions_df = pd.DataFrame()
+
+open_trades = positions_df[positions_df['status'] == 'OPEN'] if not positions_df.empty and 'status' in positions_df.columns else pd.DataFrame()
+closed_trades = positions_df[positions_df['status'] == 'CLOSED'] if not positions_df.empty and 'status' in positions_df.columns else pd.DataFrame()
+
+realized_pnl = closed_trades['pnl'].sum() if not closed_trades.empty and 'pnl' in closed_trades.columns else 0.0
+
+# Calculate Live Unrealized PnL & Margin
+unrealized_pnl = 0.0
+allocated_margin = 0.0
+
+if not open_trades.empty:
+    for idx, row in open_trades.iterrows():
+        try:
+            tick = str(row['ticker'])
+            qty = float(row['qty'])
+            entry = float(row['entry_price'])
+            act = str(row['action']).upper()
+            
+            allocated_margin += (entry * qty)
+            
+            # Fetch Current Live Price
+            data = yf.Ticker(tick).history(period="1d", interval="1m")
+            if not data.empty:
+                curr_price = float(data['Close'].iloc[-1])
+                trade_pnl = (curr_price - entry) * qty if act == "BUY" else (entry - curr_price) * qty
+                unrealized_pnl += trade_pnl
+        except Exception:
+            pass
+
+starting_balance = 100000.0
+live_equity = starting_balance + realized_pnl + unrealized_pnl
+buying_power = max(0.0, (live_equity * 2.0) - allocated_margin)
 
 # --- INSTITUTIONAL CSS ---
 st.markdown("""
@@ -199,11 +242,13 @@ ticker_tape_html = f"""
 """
 components.html(ticker_tape_html, height=100)
 
-# --- LIVE METRICS ROW ---
+# --- LIVE METRICS ROW (DYNAMICALLY UPDATED FROM DATABASE) ---
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("ACCOUNT EQUITY", f"${health.get('equity', 100000.0):,.2f}", "+$1,240.50 (1.24%)")
-m2.metric("BUYING POWER", f"${health.get('buying_power', 200000.0):,.2f}")
-m3.metric("ACTIVE AI SETUPS", "3 Signals", "100% Confluence")
+pnl_total = realized_pnl + unrealized_pnl
+pnl_pct = (pnl_total / starting_balance) * 100.0
+m1.metric("ACCOUNT EQUITY", f"${live_equity:,.2f}", f"{pnl_total:+,.2f} ({pnl_pct:+.2f}%)")
+m2.metric("BUYING POWER", f"${buying_power:,.2f}")
+m3.metric("UNREALIZED P&L", f"${unrealized_pnl:,.2f}", f"Active Trades: {len(open_trades)}")
 m4.metric("SYSTEM RISK", "0.00%", "Circuit Breaker Safe 🟢")
 
 st.divider()
@@ -292,7 +337,7 @@ with tab1:
     components.html(tv_html, height=570)
 
 # ==========================================
-# TAB 02: AI SETUP MATRIX (WITH DYNAMIC RISK-SIZED ONE-CLICK EXECUTION)
+# TAB 02: AI SETUP MATRIX (WITH DIRECT DATABASE EXECUTION & INSTANT RERUN)
 # ==========================================
 with tab2:
     st.subheader("🎯 Real-Time AI Trade Signals & Confluence Matrix")
@@ -386,7 +431,7 @@ with tab2:
 
     st.divider()
 
-    # --- ONE-CLICK INSTANT TRADE EXECUTION PANEL WITH DYNAMIC RISK SIZER ---
+    # --- ONE-CLICK INSTANT TRADE EXECUTION PANEL WITH DIRECT DATABASE SAVE ---
     st.markdown(f"### ⚡ AI-Recommended Dynamic Bracket Order: **{selected_ticker}**")
     
     trade_side = str(selected_row.get("Action", "BUY")).upper()
@@ -416,16 +461,22 @@ with tab2:
         st.write(" ")
         exec_btn_label = f"🚀 EXECUTE {trade_side} {trade_qty:.2f} {selected_ticker} @ ${e_val:,.2f}"
         if st.button(exec_btn_label, type="primary", use_container_width=True, key="ai_matrix_exec_btn"):
-            res = engine.execute_bracket_order(
-                raw_ticker,
-                trade_qty,
-                trade_side,
-                e_val,
-                tp_val,
-                sl_val,
-                trade_horizon
-            )
-            st.success(f"✅ Trade Executed! {res.get('message', 'Bracket order dispatched and logged to Neon Postgres.')}")
+            exec_conn = get_db_conn()
+            if exec_conn:
+                try:
+                    with exec_conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO demo_positions (ticker, action, qty, entry_price, stop_loss, take_profit, status, opened_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, 'OPEN', CURRENT_TIMESTAMP);
+                        """, (raw_ticker, trade_side, trade_qty, e_val, sl_val, tp_val))
+                        exec_conn.commit()
+                    exec_conn.close()
+                    st.success(f"✅ Trade Executed & Saved to Neon Postgres! Opening {trade_qty} shares of {selected_ticker} @ ${e_val:,.2f}")
+                    st.rerun()
+                except Exception as ex:
+                    st.error(f"Execution Error: {ex}")
+            else:
+                st.error("Failed to connect to Neon Postgres Cloud Database.")
 
 # ==========================================
 # TAB 03: PORTFOLIO & EXECUTION
@@ -472,16 +523,28 @@ with tab3:
         st.plotly_chart(fig_port, use_container_width=True)
 
     with col_p2:
-        st.markdown("### 📝 Bracket Order Execution")
+        st.markdown("### 📝 Manual Bracket Order Execution")
         exec_ticker = st.selectbox("Asset Ticker:", ["NVDA", "BTC-USD", "GC=F", "SPY", "AAPL"], format_func=lambda x: get_clean_symbol(x))
         exec_side = st.radio("Direction:", ["BUY", "SELL"], horizontal=True)
-        exec_qty = st.number_input("Order Quantity:", min_value=1, value=10)
+        exec_qty = st.number_input("Order Quantity:", min_value=1.0, value=10.0)
         exec_entry = st.number_input("Entry Price ($):", value=128.50)
         exec_tp = st.number_input("Take Profit Target ($):", value=139.70)
         exec_sl = st.number_input("Stop Loss ($):", value=125.00)
-        if st.button("🚀 FIRE BRACKET ORDER TO CLOUD ENGINE", type="primary", use_container_width=True):
-            res = engine.execute_bracket_order(exec_ticker, exec_qty, exec_side, exec_entry, exec_tp, exec_sl, "SCALP")
-            st.success(f"Execution Logged: {res.get('message', 'Trade sent to Neon Cloud Database!')}")
+        if st.button("🚀 FIRE MANUAL BRACKET ORDER TO CLOUD ENGINE", type="primary", use_container_width=True):
+            exec_conn = get_db_conn()
+            if exec_conn:
+                try:
+                    with exec_conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO demo_positions (ticker, action, qty, entry_price, stop_loss, take_profit, status, opened_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, 'OPEN', CURRENT_TIMESTAMP);
+                        """, (exec_ticker, exec_side, exec_qty, exec_entry, exec_sl, exec_tp))
+                        exec_conn.commit()
+                    exec_conn.close()
+                    st.success("✅ Order Executed and saved to Neon Postgres!")
+                    st.rerun()
+                except Exception as ex:
+                    st.error(f"Error executing manual order: {ex}")
 
     st.divider()
 
