@@ -3,5 +3,5 @@ pandas
 numpy
 plotly
 psycopg2-binary
+yfinance
 requests
-python-dotenv
