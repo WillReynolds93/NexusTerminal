@@ -348,19 +348,23 @@ m4.metric("SYSTEM RISK", "0.00%", "Circuit Breaker Safe 🟢")
 
 st.divider()
 
-# --- 11 MASTER TABS ---
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
-    "01 // HOME DESK", "02 // AI SETUP MATRIX", "03 // PORTFOLIO & EXECUTION",
-    "04 // AUTOPILOT BRAIN", "05 // RESEARCH & MACRO FLOW", "06 // WATCHLIST GRID",
-    "07 // PROP AUTOPILOT", "08 // WEALTH & WISHLIST", "09 // SYSTEM & BROADCASTER",
-    "10 // STRATEGY MATRIX", "11 // SECURITY & 2FA"
+# --- 8 CONSOLIDATED MASTER TABS ---
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    "01 // HOME DESK & WATCHLIST", 
+    "02 // AI SETUP & EXECUTION", 
+    "03 // PORTFOLIO & TRADE HISTORY",
+    "04 // AUTOPILOT BRAIN", 
+    "05 // RESEARCH & MACRO FLOW", 
+    "06 // WEALTH VAULT", 
+    "07 // SYSTEM & BROADCASTER",
+    "08 // SECURITY & 2FA"
 ])
 
 # ==========================================
-# TAB 01: HOME DESK
+# TAB 01: HOME DESK & WATCHLIST (CONSOLIDATED)
 # ==========================================
 with tab1:
-    st.subheader("🌐 Global Market Overview & Live TradingView Engine")
+    st.subheader("🌐 Global Market Overview & Cloud Watchlist")
     col_cat, col_dd, col_search, col_fav, col_tf = st.columns([1.2, 1.2, 2, 1, 0.8])
     with col_cat: cat_select = st.selectbox("Asset Class:", ["All Assets", "Equities", "Crypto", "Commodities", "Forex"])
     asset_dict = {"Equities": ["NVDA", "SPY", "QQQ", "AAPL", "TSLA", "AMD", "MSFT", "AMZN", "META", "PLTR", "MSTR", "COIN"], "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD"], "Commodities": ["GC=F", "CL=F", "SI=F"], "Forex": ["EUR/USD", "GBP/USD"]}
@@ -382,21 +386,52 @@ with tab1:
     st.markdown(f"### {logo_disp} Live Chart: **{clean_disp}**", unsafe_allow_html=True)
     
     tv_html = f"""
-    <div class="tradingview-widget-container" style="height:560px;width:100%">
-      <div id="tv_home_chart" style="height:560px;width:100%"></div>
+    <div class="tradingview-widget-container" style="height:540px;width:100%">
+      <div id="tv_home_chart" style="height:540px;width:100%"></div>
       <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
       <script type="text/javascript">
       new TradingView.widget({{ "autosize": true, "symbol": "{tv_symbol}", "interval": "{chart_tf}", "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "toolbar_bg": "#030712", "enable_publishing": false, "allow_symbol_change": true, "container_id": "tv_home_chart" }});
       </script>
     </div>
     """
-    components.html(tv_html, height=570)
+    components.html(tv_html, height=550)
+
+    st.divider()
+    
+    # EMBEDDED CLOUD WATCHLIST GRID
+    st.markdown("### ⭐ Active Watchlist Grid (Neon Cloud Synced)")
+    col_wadd1, col_wadd2 = st.columns([3, 1])
+    with col_wadd1: new_symbol = st.text_input("Quick Add Ticker to Cloud Watchlist:", placeholder="e.g. TSLA, AMD")
+    with col_wadd2:
+        st.write(" "); st.write(" ")
+        if st.button("➕ Quick Add", type="primary") and new_symbol:
+            CloudDatabaseManager.add_to_watchlist(new_symbol.upper().strip())
+            st.rerun()
+
+    w_cols = st.columns(2)
+    for idx, item in enumerate(wl_items):
+        logo_html = get_logo_html(item, size=28)
+        clean_name = get_clean_symbol(item)
+        tv_sym = get_tv_symbol(item)
+        with w_cols[idx % 2]:
+            st.markdown(f"<div style='background:#0B132B; border:1px solid #1E293B; border-radius:10px; padding:12px; margin-bottom:10px;'>{logo_html}<span style='font-size:1.3rem; font-weight:bold;'>{clean_name}</span></div>", unsafe_allow_html=True)
+            mini_chart_html = f"""
+            <div class="tradingview-widget-container" style="height:220px;">
+              <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js" async>
+              {{"symbol": "{tv_sym}", "width": "100%", "height": "220", "locale": "en", "dateRange": "1M", "colorTheme": "dark", "isTransparent": true}}
+              </script>
+            </div>
+            """
+            components.html(mini_chart_html, height=230)
+            if st.button(f"❌ Remove {item}", key=f"del_{item}"):
+                CloudDatabaseManager.remove_from_watchlist(item)
+                st.rerun()
 
 # ==========================================
-# TAB 02: AI SETUP MATRIX
+# TAB 02: AI SETUP & EXECUTION (CONSOLIDATED)
 # ==========================================
 with tab2:
-    st.subheader("🎯 Real-Time AI Trade Signals & Confluence Matrix")
+    st.subheader("🎯 Real-Time AI Trade Signals, ICT A-M-D & Bracket Execution")
     c_filt1, c_filt2 = st.columns([1.2, 2.8])
     with c_filt1: min_conf = st.slider("Minimum Confidence Filter (%)", min_value=50, max_value=100, value=80)
     with c_filt2: horizon_filter = st.radio("Trade Timeframe / Horizon:", ["All Horizons", "Scalp", "Swing", "Long"], horizontal=True)
@@ -470,7 +505,7 @@ with tab2:
 
     st.divider()
 
-    # ONE-CLICK EXECUTION (Fixed Badge & Formatting Error)
+    # ONE-CLICK EXECUTION (Clean HTML Rendering Fix)
     st.markdown(f"### ⚡ AI-Recommended Dynamic Bracket Order: **{selected_ticker}**")
     risk_dist = abs(e_val - sl_val) if abs(e_val - sl_val) > 0 else (e_val * 0.02)
     base_risk_budget = 2000.0 * (conf_score / 100.0)
@@ -483,7 +518,7 @@ with tab2:
     with col_ex2:
         st.write(" "); st.write(" ")
         st.markdown(f"**Side:** <b style='color:#00E676;'>{trade_side}</b>", unsafe_allow_html=True)
-        st.markdown(f"**Bracket SL / TP:** <span style='background:#1E293B; padding:2px 6px; border-radius:4px;'>${sl_val:,.2f}</span> / <span style='background:#1E293B; padding:2px 6px; border-radius:4px;'>${tp_val:,.2f}</span>", unsafe_allow_html=True)
+        st.markdown(f"**Bracket SL / TP:** <span style='color:#EF4444; font-weight:bold;'>${sl_val:,.2f}</span> &nbsp;/&nbsp; <span style='color:#00E676; font-weight:bold;'>${tp_val:,.2f}</span>", unsafe_allow_html=True)
     with col_ex3:
         st.write(" "); st.write(" ")
         exec_btn_label = f"🚀 EXECUTE {trade_side} {trade_qty:.2f} {selected_ticker} @ ${e_val:,.2f}"
@@ -507,10 +542,10 @@ with tab2:
                     except Exception as ex: st.error(f"Execution Error: {ex}")
 
 # ==========================================
-# TAB 03: PORTFOLIO & EXECUTION
+# TAB 03: PORTFOLIO & TRADE HISTORY (CONSOLIDATED)
 # ==========================================
 with tab3:
-    st.subheader("⚡ Autonomous Demo Portfolio & Bracket Order Engine")
+    st.subheader("⚡ Portfolio Performance & Executed Trade History")
     pm1, pm2, pm3, pm4 = st.columns(4)
     pm1.metric("REALIZED DEMO P&L", f"${realized_pnl:,.2f}", delta=f"${realized_pnl:,.2f}" if realized_pnl != 0 else None)
     pm2.metric("ACTIVE OPEN TRADES", len(open_trades))
@@ -536,32 +571,57 @@ with tab3:
     else: st.caption("No closed trades logged yet.")
 
 # ==========================================
-# TAB 04: AUTOPILOT BRAIN & MACHINE REINFORCEMENT LEARNING
+# TAB 04: AUTOPILOT BRAIN & STRATEGY MATRIX (CONSOLIDATED)
 # ==========================================
 with tab4:
-    st.subheader("🧠 Autopilot Thinking Engine & Reinforcement Weights")
-    st.write("The background cloud agent continuously monitors market regimes and past trade outcomes in Neon Postgres, adjusting strategy confidence weights dynamically.")
+    st.subheader("🧠 Multi-Firm Prop Autopilot & Strategy Intelligence Engine")
     
-    col_b1, col_b2, col_b3 = st.columns(3)
-    is_weekend = datetime.now().weekday() in [5, 6]
-    col_b1.metric("Market Regime", "Weekend 24/7 Crypto Focus" if is_weekend else "Regular Market Hours", "Active Scanning 🟢")
-    col_b2.metric("Min Confidence Gate", f"{min_conf_threshold}%", "Autopilot Sliding Scale")
-    col_b3.metric("Confluence Engine", "ICT A-M-D + CVD + VWAP", "Multi-Factor Filter")
-    
+    st.markdown("### 🤖 Master System Autopilot & Confidence Controls")
+    col_ap1, col_ap2 = st.columns([1.2, 1.8])
+    with col_ap1:
+        new_ap_state = st.toggle("🚀 ENABLE CLOUD AUTOPILOT", value=is_autopilot)
+    with col_ap2:
+        new_min_conf = st.slider("Minimum Confidence Threshold for Live Trade Trigger (%)", min_value=50, max_value=95, value=int(min_conf_threshold), step=5)
+
+    if new_ap_state != is_autopilot or new_min_conf != min_conf_threshold:
+        set_autopilot_config_ui(new_ap_state, new_min_conf)
+        st.success(f"Updated Autopilot Settings: Active={new_ap_state} | Threshold={new_min_conf}%")
+        st.rerun()
+
     st.divider()
-    st.markdown("### 📊 Live Strategy Expectancy Multipliers")
     
-    df_brain = pd.DataFrame({
-        "Strategy Model": ["ICT Silver Bullet Sweep", "Donchian Vol Breakout", "Williams %R Exhaustion"],
-        "Target Asset Class": ["Crypto / FX Liquidity", "US Equities & High RVOL", "Equity Dip Reversion"],
-        "Expectancy ($)": ["+$142.50", "+$88.20", "+$45.10"],
-        "Feedback Multiplier": ["1.20x 🟢 (BOOSTED)", "1.08x 🟢", "1.00x 🟡 (BASELINE)"],
-        "Autopilot Status": ["READY ⚡", "READY ⚡", "READY ⚡"]
+    st.markdown("### 🔀 Strategy Amalgamation & Confluence Factors")
+    col_sm1, col_sm2 = st.columns(2)
+    with col_sm1:
+        f1 = st.checkbox("ICT A-M-D (Accumulation, Manipulation, Distribution)", value=True)
+        f2 = st.checkbox("Order Flow (Cumulative Volume Delta & Imbalances)", value=True)
+        f3 = st.checkbox("Volatility Breakout (Donchian Channels + Volume Z-Score)", value=True)
+    with col_sm2:
+        st.selectbox("Target Routing Account:", ["Account 1: Virtual Cloud Simulator", "Account 2: Alpaca Paper Trading", "Account 3: FTMO Prop Challenge"])
+        st.slider("Max Position Risk (% Equity):", 0.1, 5.0, 1.0, 0.1)
+
+    st.divider()
+    
+    st.markdown("### 📊 Active Strategy Amalgamation Performance")
+    df_strats = pd.DataFrame({
+        "Strategy Model": ["ICT Silver Bullet Sweep", "Order Flow Imbalance", "Donchian Vol Breakout"],
+        "Target Asset Class": ["US Equities & Crypto", "Digital Assets (Crypto)", "Precious Metals"],
+        "Win Rate (%)": ["81.4%", "74.2%", "68.5%"],
+        "Expectancy Multiplier": ["1.20x 🟢 (BOOSTED)", "1.08x 🟢", "1.00x 🟡 (BASELINE)"],
+        "Status": ["ACTIVE 🟢", "ACTIVE 🟢", "ACTIVE 🟢"]
     })
-    st.markdown(render_styled_table(df_brain, ticker_col="Strategy Model"), unsafe_allow_html=True)
+    st.markdown(render_styled_table(df_strats, ticker_col="Strategy Model"), unsafe_allow_html=True)
+
+    st.divider()
+    st.markdown("### 🏆 Prop Challenge Metrics & Risk Compliance")
+    col_p1, col_p2, col_p3 = st.columns(3)
+    col_p1.metric("Prop Challenge Profit", "+$4,250.00", "Target: $10,000.00")
+    col_p2.metric("Max Daily Drawdown", "0.82%", "Limit: 5.00% 🟢")
+    col_p3.metric("Max Total Drawdown", "1.45%", "Limit: 10.00% 🟢")
+    st.progress(0.425, text="Challenge Phase 1 Progress: 42.5% Complete")
 
 # ==========================================
-# TAB 05: RESEARCH & MACRO FLOW (FULLY RESTORED)
+# TAB 05: RESEARCH & MACRO FLOW (RESTORED)
 # ==========================================
 with tab5:
     st.subheader("🐋 Institutional Research: Deep Dive, Big Movers, SEC Wire & Macro Flow")
@@ -713,66 +773,9 @@ with tab5:
         st.markdown(render_styled_table(df_dp, ticker_col="Ticker"), unsafe_allow_html=True)
 
 # ==========================================
-# TAB 06: WATCHLIST GRID
+# TAB 06: WEALTH VAULT (RESTORED)
 # ==========================================
 with tab6:
-    st.subheader("⭐ Cloud Watchlist Grid (Neon Postgres Persistence)")
-    col_wadd1, col_wadd2 = st.columns([3, 1])
-    with col_wadd1: new_symbol = st.text_input("Add New Symbol to Cloud Watchlist:", placeholder="e.g. TSLA, AMD")
-    with col_wadd2:
-        st.write(" "); st.write(" ")
-        if st.button("➕ Add Symbol", type="primary") and new_symbol:
-            CloudDatabaseManager.add_to_watchlist(new_symbol.upper().strip()); st.rerun()
-    st.divider()
-    w_cols = st.columns(2)
-    for idx, item in enumerate(wl_items):
-        logo_html = get_logo_html(item, size=28)
-        clean_name = get_clean_symbol(item)
-        tv_sym = get_tv_symbol(item)
-        with w_cols[idx % 2]:
-            st.markdown(f"<div style='background:#0B132B; border:1px solid #1E293B; border-radius:10px; padding:12px; margin-bottom:10px;'>{logo_html}<span style='font-size:1.3rem; font-weight:bold;'>{clean_name}</span></div>", unsafe_allow_html=True)
-            mini_chart_html = f"""
-            <div class="tradingview-widget-container" style="height:220px;">
-              <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js" async>
-              {{"symbol": "{tv_sym}", "width": "100%", "height": "220", "locale": "en", "dateRange": "1M", "colorTheme": "dark", "isTransparent": true}}
-              </script>
-            </div>
-            """
-            components.html(mini_chart_html, height=230)
-            if st.button(f"❌ Remove {item}", key=f"del_{item}"):
-                CloudDatabaseManager.remove_from_watchlist(item); st.rerun()
-
-# ==========================================
-# TAB 07: PROP AUTOPILOT (WITH SLIDING SCALE THRESHOLD)
-# ==========================================
-with tab7:
-    st.subheader("🏆 Multi-Firm Prop Autopilot & Hands-Free Execution")
-    
-    st.markdown("### 🤖 Master System Autopilot & Confidence Controls")
-    
-    col_ap1, col_ap2 = st.columns([1.2, 1.8])
-    with col_ap1:
-        new_ap_state = st.toggle("🚀 ENABLE CLOUD AUTOPILOT", value=is_autopilot)
-    with col_ap2:
-        new_min_conf = st.slider("Minimum Confidence Threshold for Live Trade Trigger (%)", min_value=50, max_value=95, value=int(min_conf_threshold), step=5)
-
-    if new_ap_state != is_autopilot or new_min_conf != min_conf_threshold:
-        set_autopilot_config_ui(new_ap_state, new_min_conf)
-        st.success(f"Updated Autopilot Settings: Active={new_ap_state} | Threshold={new_min_conf}%")
-        st.rerun()
-
-    st.divider()
-    st.markdown("### 📊 Prop Challenge Metrics & Risk Compliance")
-    col_p1, col_p2, col_p3 = st.columns(3)
-    col_p1.metric("Prop Challenge Profit", "+$4,250.00", "Target: $10,000.00")
-    col_p2.metric("Max Daily Drawdown", "0.82%", "Limit: 5.00% 🟢")
-    col_p3.metric("Max Total Drawdown", "1.45%", "Limit: 10.00% 🟢")
-    st.progress(0.425, text="Challenge Phase 1 Progress: 42.5% Complete")
-
-# ==========================================
-# TAB 08: WEALTH & WISHLIST (FULLY RESTORED)
-# ==========================================
-with tab8:
     st.subheader("💰 Wealth Vault: Long-Term Holdings & Target Buy Wishlist")
     col_w1, col_w2 = st.columns(2)
     with col_w1:
@@ -807,31 +810,17 @@ with tab8:
         st.rerun()
 
 # ==========================================
-# TAB 09: SYSTEM & BROADCASTER
+# TAB 07: SYSTEM & BROADCASTER
 # ==========================================
-with tab9:
+with tab7:
     st.subheader("📡 Webhook Endpoints & Signal Dispatcher")
     st.code("POST http://localhost:8501/api/v1/webhook\nHeader -> Authorization: Bearer nexus_secure_bearer_token_2026", language="text")
     st.success("Listening for incoming TradingView Pine Script webhooks...")
 
 # ==========================================
-# TAB 10: STRATEGY MATRIX
+# TAB 08: SECURITY & 2FA VAULT
 # ==========================================
-with tab10:
-    st.subheader("🧠 Multi-Factor Strategy Amalgamation & Routing Engine")
-    df_strats = pd.DataFrame({
-        "Strategy Model": ["ICT Silver Bullet Sweep", "Order Flow Imbalance", "Donchian Vol Breakout"],
-        "Target Asset Class": ["US Equities & Crypto", "Digital Assets (Crypto)", "Precious Metals"],
-        "Win Rate (%)": ["81.4%", "74.2%", "68.5%"],
-        "Sharpe Ratio": ["2.85", "2.42", "1.88"],
-        "Status": ["ACTIVE 🟢", "ACTIVE 🟢", "ACTIVE 🟢"]
-    })
-    st.markdown(render_styled_table(df_strats, ticker_col="Strategy Model"), unsafe_allow_html=True)
-
-# ==========================================
-# TAB 11: SECURITY & 2FA VAULT
-# ==========================================
-with tab11:
+with tab8:
     st.subheader("🔒 Security Vault, 2FA & Emergency System Controls")
     if st.button("🔴 PANIC: FLATTEN ALL POSITIONS & HALT AGENTS", use_container_width=True, type="primary"):
         set_autopilot_config_ui(False, min_conf_threshold)
