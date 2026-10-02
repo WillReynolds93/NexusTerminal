@@ -25,10 +25,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- INITIALIZE DATABASE ---
-CloudDatabaseManager.initialize_tables()
-
-# --- DATABASE CONNECTION HELPER ---
+# --- DATABASE CONNECTION & AUTOMATIC TABLE INITIALIZER ---
 def get_db_conn():
     db_url = st.secrets.get("DATABASE_URL", os.environ.get("DATABASE_URL", ""))
     if db_url:
@@ -39,6 +36,55 @@ def get_db_conn():
         except Exception:
             return None
     return None
+
+def init_all_tables():
+    conn = get_db_conn()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS signals (
+                        id SERIAL PRIMARY KEY,
+                        horizon VARCHAR(20),
+                        ticker VARCHAR(20),
+                        pattern VARCHAR(100),
+                        confidence INT,
+                        win_prob INT,
+                        risk_reward VARCHAR(20),
+                        entry DOUBLE PRECISION,
+                        stop_loss DOUBLE PRECISION,
+                        target DOUBLE PRECISION,
+                        action VARCHAR(10),
+                        rationale TEXT,
+                        strategy VARCHAR(50) DEFAULT 'Donchian Breakout',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS demo_positions (
+                        id SERIAL PRIMARY KEY,
+                        ticker VARCHAR(20),
+                        action VARCHAR(10),
+                        qty DOUBLE PRECISION,
+                        entry_price DOUBLE PRECISION,
+                        stop_loss DOUBLE PRECISION,
+                        take_profit DOUBLE PRECISION,
+                        status VARCHAR(20) DEFAULT 'OPEN',
+                        exit_price DOUBLE PRECISION,
+                        pnl DOUBLE PRECISION,
+                        strategy VARCHAR(50) DEFAULT 'Donchian Breakout',
+                        opened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        closed_at TIMESTAMP
+                    );
+                """)
+                conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+# Run automatic database table setup
+init_all_tables()
+CloudDatabaseManager.initialize_tables()
 
 # --- UNIVERSAL SYMBOL & LOGO HELPERS ---
 def get_clean_symbol(ticker):
@@ -248,7 +294,7 @@ ticker_tape_html = f"""
 """
 components.html(ticker_tape_html, height=100)
 
-# --- LIVE METRICS ROW (DYNAMICALLY UPDATED FROM DATABASE) ---
+# --- LIVE METRICS ROW ---
 m1, m2, m3, m4 = st.columns(4)
 pnl_total = realized_pnl + unrealized_pnl
 pnl_pct = (pnl_total / starting_balance) * 100.0
@@ -444,7 +490,6 @@ with tab2:
     trade_horizon = str(selected_row.get("Horizon", "15m Scalp"))
     pattern_name = str(selected_row.get("Pattern", "Donchian Breakout"))
     
-    # Calculate Dynamic AI Lot Size based on $2000 Risk Scaled by Confidence Score
     risk_dist = abs(e_val - sl_val) if abs(e_val - sl_val) > 0 else (e_val * 0.02)
     base_risk_budget = 2000.0 * (conf_score / 100.0)
     recommended_qty = max(1.0, round(base_risk_budget / risk_dist, 2))
@@ -467,6 +512,7 @@ with tab2:
         st.write(" ")
         exec_btn_label = f"🚀 EXECUTE {trade_side} {trade_qty:.2f} {selected_ticker} @ ${e_val:,.2f}"
         if st.button(exec_btn_label, type="primary", use_container_width=True, key="ai_matrix_exec_btn"):
+            init_all_tables()
             exec_conn = get_db_conn()
             if exec_conn:
                 try:
@@ -537,6 +583,7 @@ with tab3:
         exec_tp = st.number_input("Take Profit Target ($):", value=139.70)
         exec_sl = st.number_input("Stop Loss ($):", value=125.00)
         if st.button("🚀 FIRE MANUAL BRACKET ORDER TO CLOUD ENGINE", type="primary", use_container_width=True):
+            init_all_tables()
             exec_conn = get_db_conn()
             if exec_conn:
                 try:
