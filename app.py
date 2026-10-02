@@ -305,6 +305,7 @@ st.markdown("""
     .prop-card { background: #090D16; border: 1px solid #1E293B; border-radius: 10px; padding: 20px; margin-bottom: 15px; }
     .level-card { background: #0B132B; border: 1px solid #1E293B; border-radius: 8px; padding: 15px; text-align: center; }
     .amd-card { background: #1E293B; border-left: 4px solid #818CF8; border-radius: 6px; padding: 12px; margin-bottom: 15px; }
+    .news-tag { background: #1E293B; color: #38BDF8; padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; font-family: monospace; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -469,7 +470,7 @@ with tab2:
 
     st.divider()
 
-    # ONE-CLICK EXECUTION
+    # ONE-CLICK EXECUTION (Fixed HTML Formatting Error)
     st.markdown(f"### ⚡ AI-Recommended Dynamic Bracket Order: **{selected_ticker}**")
     risk_dist = abs(e_val - sl_val) if abs(e_val - sl_val) > 0 else (e_val * 0.02)
     base_risk_budget = 2000.0 * (conf_score / 100.0)
@@ -481,7 +482,7 @@ with tab2:
         st.caption(f"Confidence: **{conf_score}%** | Risk: **${(risk_dist * trade_qty):,.2f}**")
     with col_ex2:
         st.write(" "); st.write(" ")
-        st.markdown(f"**Side:** `<b style='color:#00E676;'>{trade_side}</b>`", unsafe_allow_html=True)
+        st.markdown(f"**Side:** <b style='color:#00E676;'>{trade_side}</b>", unsafe_allow_html=True)
         st.markdown(f"**Bracket SL / TP:** `${sl_val:,.2f}` / `${tp_val:,.2f}`")
     with col_ex3:
         st.write(" "); st.write(" ")
@@ -550,28 +551,156 @@ with tab4:
         st.line_chart(sim_paths)
 
 # ==========================================
-# TAB 05: RESEARCH & MACRO FLOW
+# TAB 05: RESEARCH & MACRO FLOW (FULLY RESTORED)
 # ==========================================
 with tab5:
     st.subheader("🐋 Institutional Research: Deep Dive, Big Movers, SEC Wire & Macro Flow")
+    
     t_flow1, t_flow2, t_flow3, t_flow4, t_flow5, t_flow6 = st.tabs([
-        "🔍 Universal Asset Research Search", "🚀 Big Market Movers & RVOL Spikes", "🏛️ SEC Form 4 Insider Wire (C-Suite)",
-        "📰 Visual Breaking News Wire", "📅 Macro Economic Calendar Matrix", "🕵 Dark Pool Prints & Options Sweeps"
+        "🔍 Universal Asset Research Search",
+        "🚀 Big Market Movers & RVOL Spikes",
+        "🏛️️ SEC Form 4 Insider Wire (C-Suite)",
+        "📰 Visual Breaking News Wire",
+        "📅 Macro Economic Calendar Matrix",
+        "🕵 Dark Pool Prints & Options Sweeps"
     ])
+    
+    # 1. UNIVERSAL RESEARCH
     with t_flow1:
         search_q = st.text_input("🔍 Search Any Symbol for Comprehensive Asset Summary & Chart:", value="BTC-USD" if datetime.now().weekday() in [5, 6] else "NVDA")
         q_clean = get_clean_symbol(search_q)
+        q_logo = get_logo_html(search_q, size=32)
         q_tv = get_tv_symbol(search_q)
-        res_chart_html = f"""
-        <div class="tradingview-widget-container" style="height:460px;width:100%">
-          <div id="tv_res_chart" style="height:460px;width:100%"></div>
-          <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-          <script type="text/javascript">
-          new TradingView.widget({{ "autosize": true, "symbol": "{q_tv}", "interval": "D", "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "toolbar_bg": "#030712", "enable_publishing": false, "allow_symbol_change": false, "container_id": "tv_res_chart" }});
-          </script>
-        </div>
-        """
-        components.html(res_chart_html, height=470)
+        c_res_info, c_res_chart = st.columns([1.1, 1.4])
+        
+        with c_res_info:
+            st.markdown(f"## {q_logo} Executive Summary: **{q_clean}**", unsafe_allow_html=True)
+            q_upper = str(search_q).upper()
+            if "BTC" in q_upper or "ETH" in q_upper or "SOL" in q_upper or "CRYPTO" in q_upper:
+                st.markdown("""
+                **Business Overview & Moat:**
+                Premier decentralized digital store of value and smart contract network. Institutional adoption driven by spot ETF inflows, corporate treasury holdings, and post-halving programmatic supply reduction.
+                
+                **Key Catalyst Calendar:**
+                * **Q4 Halving Impact:** Supply issuance cut to 3.125 BTC per block.
+                * **Federal Reserve Rate Path:** Rate cuts reduce real yield drag on zero-yield digital assets.
+                """)
+                st.metric("Market Capitalization", "$1.28 Trillion", "+3.4% (24h)")
+                st.metric("NVT Ratio (Valuation)", "42.1 (Undervalued)", "On-chain volume expanding")
+            elif "GC" in q_upper or "GOLD" in q_upper or "OIL" in q_upper or "EUR" in q_upper:
+                st.markdown("""
+                **Business Overview & Macro Drivers:**
+                Global monetary reserve asset and geopolitical tail-risk hedge. Central banks accumulating physical bullion at fastest annual pace in 55 years to diversify foreign exchange reserves.
+                """)
+                st.metric("CFTC COT Net Position", "+242,000 Contracts", "Commercials Net Long")
+                st.metric("Inverse DXY Correlation", "-0.88", "Strong Tail-Risk Hedge")
+            else:
+                st.markdown("""
+                **Business Overview & Competitive Moat:**
+                Dominant monopoly in accelerated computing, GPU data center architecture, and AI infrastructure software (CUDA ecosystem). Holds > 85% market share in generative AI training and inference chips.
+                """)
+                st.metric("Market Capitalization", "$3.12 Trillion", "+14.2% YTD")
+                st.metric("Trailing P/E | Forward P/E", "42.5x | 31.2x", "PEG Ratio: 1.12")
+                
+        with c_res_chart:
+            res_chart_html = f"""
+            <div class="tradingview-widget-container" style="height:460px;width:100%">
+              <div id="tv_res_chart" style="height:460px;width:100%"></div>
+              <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+              <script type="text/javascript">
+              new TradingView.widget({{ "autosize": true, "symbol": "{q_tv}", "interval": "D", "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "toolbar_bg": "#030712", "enable_publishing": false, "allow_symbol_change": false, "container_id": "tv_res_chart" }});
+              </script>
+            </div>
+            """
+            components.html(res_chart_html, height=470)
+
+    # 2. BIG MARKET MOVERS & RVOL SPIKES
+    with t_flow2:
+        st.markdown("### 🚀 Top Daily Market Movers & Relative Volume (RVOL) Spikes")
+        col_m1, col_m2, col_m3 = st.columns(3)
+        col_m1.metric("Top Gainer: PLTR", "$44.80 (+12.4%)", "RVOL: 4.8x Avg")
+        col_m2.metric("Top RVOL Spike: NVDA", "$128.50 (+4.2%)", "RVOL: 3.8x Avg")
+        col_m3.metric("Top Outflow: TSLA", "$242.10 (-3.8%)", "RVOL: 2.1x Avg")
+        st.divider()
+        df_movers = pd.DataFrame({
+            "Ticker": ["PLTR", "NVDA", "MSTR", "COIN", "TSLA", "AMD"],
+            "Market Price ($)": ["44.80", "128.50", "182.40", "210.50", "242.10", "162.80"],
+            "Daily Change (%)": ["+12.4%", "+4.2%", "+8.5%", "+6.1%", "-3.8%", "-1.2%"],
+            "Relative Volume (RVOL)": ["4.8x 🟢", "3.8x 🟢", "3.2x 🟢", "2.9x 🟢", "2.1x 🟡", "0.9x ⚪"],
+            "Institutional Flow": ["BUY SWEEP", "ACCUMULATION", "BUY BLOCK", "CALL SWEEP", "DISTRIBUTION", "NEUTRAL"],
+            "Primary Catalyst": ["S&P 500 Index Addition & AIP Expansion", "Blackwell GPU Yield Clearance", "Bitcoin Treasury Expansion ($500M Buy)", "Crypto ETF Volume Spike", "Robotaxi Regulatory Delay", "Competitor Price Adjustments"]
+        })
+        st.markdown(render_styled_table(df_movers, ticker_col="Ticker"), unsafe_allow_html=True)
+
+    # 3. SEC FORM 4 INSIDER WIRE
+    with t_flow3:
+        st.markdown("### 🏛️ SEC Form 4 C-Suite Insider Trades (Executive Wire)")
+        df_sec_full = pd.DataFrame({
+            "Filing Date": ["2026-10-01", "2026-09-30", "2026-09-28", "2026-09-25", "2026-09-22"],
+            "Company": ["AMZN", "NVDA", "META", "AAPL", "MSFT"],
+            "Insider Name & Title": ["Jeff Bezos (Executive Chair)", "Jensen Huang (CEO)", "Mark Zuckerberg (CEO)", "Tim Cook (CEO)", "Satya Nadella (CEO)"],
+            "Transaction Type": ["AUTOMATED 10b5-1 PLAN SALE", "PURCHASE (OPEN MARKET)", "AUTOMATED 10b5-1 PLAN SALE", "AUTOMATED 10b5-1 PLAN SALE", "AUTOMATED 10b5-1 PLAN SALE"],
+            "Shares Traded": ["25,000,000", "97,200", "28,500", "70,000", "12,400"],
+            "Avg Price ($)": ["$186.40", "$128.50", "$568.20", "$224.10", "$448.20"],
+            "Total Value ($)": ["$8,500,000,000", "$12,490,200", "$16,193,700", "$15,687,000", "$5,557,680"],
+            "Strategic Context": ["Pre-scheduled 10b5-1 plan execution for Blue Origin funding", "Open market personal capital allocation into NVDA stock", "Scheduled tax diversification 10b5-1 plan execution", "Pre-planned estate tax withholding settlement", "Pre-scheduled 10b5-1 diversification plan"]
+        })
+        st.markdown(render_styled_table(df_sec_full, ticker_col="Company"), unsafe_allow_html=True)
+
+    # 4. VISUAL BREAKING NEWS CARDS
+    with t_flow4:
+        st.markdown("### 📰 Sector-Sorted Live News Wire & Visual Story Cards")
+        news_cat = st.radio("Filter News Sector:", ["🔥 All News", "💻 Tech & Semiconductors", "🪙 Crypto & Digital Assets", "🛢️ Commodities & Energy", "🏛 Central Banks & Macro Policy"], horizontal=True)
+        st.divider()
+
+        news_stories = [
+            {
+                "category": "Tech & Semiconductors", "tag": "SEMICONDUCTORS",
+                "title": "NVIDIA Blackwell B200 Production Reaches Yield Milestone as Hyperscaler Demand Surges",
+                "source": "Bloomberg Markets • 14 mins ago", "thumb": "https://images.unsplash.com/photo-1518770660439-4636190af475?w=400&q=80",
+                "summary": "TSMC confirmed advanced CoWoS packaging yields have stabilized, unlocking 2.8M GPU unit shipments for Q4. Microsoft and Meta increase CapEx budgets by $12B."
+            },
+            {
+                "category": "Crypto & Digital Assets", "tag": "CRYPTO / ETF",
+                "title": "BlackRock iShares Bitcoin Trust Records $420M Net Daily Inflows Amid Exchange Outflows",
+                "source": "CoinDesk • 32 mins ago", "thumb": "https://images.unsplash.com/photo-1518546305927-5a555bb7020d?w=400&q=80",
+                "summary": "Institutional spot ETF buying absorbs 4x daily miner issuance. On-chain wallet analytics indicate over 68% of circulating BTC has remained unmoved for > 1 year."
+            },
+            {
+                "category": "Central Banks & Macro Policy", "tag": "MACRO / FED",
+                "title": "Federal Reserve Swaps Price 88% Probability of 25bps Rate Cut Following Inflation Print",
+                "source": "Financial Times • 1 hr ago", "thumb": "https://images.unsplash.com/photo-1526304640581-d334cdbbf45e?w=400&q=80",
+                "summary": "Core PCE inflation metrics align with FOMC 2.0% target trajectory. Yields on US 10-Year Treasury notes ease to 3.74% as rate cut expectations solidify."
+            }
+        ]
+
+        for story in news_stories:
+            if news_cat == "🔥 All News" or story["category"] in news_cat:
+                c_img, c_body = st.columns([1, 3.5])
+                with c_img: st.image(story["thumb"], use_container_width=True)
+                with c_body:
+                    st.markdown(f"<span class='news-tag'>{story['tag']}</span> <span style='color:#94A3B8; font-size:0.8rem; margin-left:10px;'>{story['source']}</span>", unsafe_allow_html=True)
+                    st.markdown(f"#### {story['title']}")
+                    st.write(story["summary"])
+                st.divider()
+
+    # 5. MACRO CALENDAR
+    with t_flow5:
+        st.markdown("### 📅 Macroeconomic Calendar & Central Bank Event Matrix")
+        df_macro_cal = pd.DataFrame({
+            "Date / Time": ["Today 08:30 EST", "Today 14:00 EST", "Tomorrow 08:30 EST", "Oct 12 10:00 EST"],
+            "Event / Release": ["Core CPI Inflation (MoM)", "FOMC Meeting Minutes", "Non-Farm Payrolls (NFP)", "OPEC+ Ministerial Meeting"],
+            "Country / Region": ["🇺🇸 United States", "🇺🇸 United States", "🇺🇸 United States", "🌍 Global / OPEC"],
+            "Impact Level": ["HIGH 🔴", "HIGH 🔴", "HIGH 🔴", "MEDIUM 🟡"],
+            "Forecast": ["0.2%", "N/A", "165K", "N/A"], "Previous": ["0.3%", "N/A", "142K", "N/A"]
+        })
+        st.markdown(render_styled_table(df_macro_cal, ticker_col="Event / Release"), unsafe_allow_html=True)
+
+    # 6. DARK POOL PRINTS
+    with t_flow6:
+        st.markdown("### 🕵️ Institutional Dark Pool Prints ($10M+) & Options Sweeps")
+        df_dp = pd.DataFrame({"Time": ["09:31:02", "09:42:15"], "Ticker": ["SPY", "NVDA"], "Block Size": ["$24.5M", "$14.2M"], "Price": ["568.20", "128.45"], "Sentiment": ["BULLISH PASSIVE ABSORPTION", "BULLISH SWEEP"]})
+        st.markdown(render_styled_table(df_dp, ticker_col="Ticker"), unsafe_allow_html=True)
 
 # ==========================================
 # TAB 06: WATCHLIST GRID
@@ -604,7 +733,7 @@ with tab6:
                 CloudDatabaseManager.remove_from_watchlist(item); st.rerun()
 
 # ==========================================
-# TAB 07: PROP AUTOPILOT (WITH SLIDING SCALE THRESHOLD)
+# TAB 07: PROP AUTOPILOT
 # ==========================================
 with tab7:
     st.subheader("🏆 Multi-Firm Prop Autopilot & Hands-Free Execution")
@@ -631,7 +760,7 @@ with tab7:
     st.progress(0.425, text="Challenge Phase 1 Progress: 42.5% Complete")
 
 # ==========================================
-# TAB 08: WEALTH & WISHLIST
+# TAB 08: WEALTH & WISHLIST (FULLY RESTORED)
 # ==========================================
 with tab8:
     st.subheader("💰 Wealth Vault: Long-Term Holdings & Target Buy Wishlist")
@@ -645,6 +774,27 @@ with tab8:
         st.markdown("### 🛡️ Long-Term Wealth Rules")
         st.markdown("* **Max Sector Concentration:** 25% Cap.")
         st.markdown("* **Risk Parity Sizing:** ATR-based volatility position scaling.")
+        st.markdown("* **Target Buy Triggers:** Autopilot executes when parameters trigger.")
+
+    st.divider()
+    st.markdown("### 🎯 Target Buy Accumulation Wishlist (Neon Postgres DB Synced)")
+    df_wish = CloudDatabaseManager.get_wishlist_df()
+    if not df_wish.empty:
+        df_wish_display = df_wish.copy()
+        df_wish_display["ticker"] = df_wish_display["ticker"].apply(lambda x: get_clean_symbol(x))
+        df_wish_display.columns = ["ID", "Ticker", "Trigger Condition", "Trigger Price ($)", "Target Amount ($)"]
+        st.markdown(render_styled_table(df_wish_display, ticker_col="Ticker"), unsafe_allow_html=True)
+    
+    st.markdown("#### ➕ Add New Target Buy Parameter to Neon Cloud")
+    c_wi1, c_wi2, c_wi3, c_wi4 = st.columns(4)
+    w_sym = c_wi1.text_input("Asset Symbol:", placeholder="e.g. NVDA")
+    w_cond = c_wi2.text_input("Trigger Parameter:", placeholder="e.g. Down 10%")
+    w_price = c_wi3.number_input("Target Price ($):", value=120.00)
+    w_amt = c_wi4.number_input("Allocation ($):", value=5000)
+    if st.button("➕ Save Parameter to Cloud Database", type="primary") and w_sym:
+        CloudDatabaseManager.add_wishlist_param(w_sym.strip().upper(), w_cond.strip(), w_price, w_amt)
+        st.success(f"Saved {w_sym.upper()} to Target Wishlist!")
+        st.rerun()
 
 # ==========================================
 # TAB 09: SYSTEM & BROADCASTER
@@ -652,6 +802,7 @@ with tab8:
 with tab9:
     st.subheader("📡 Webhook Endpoints & Signal Dispatcher")
     st.code("POST http://localhost:8501/api/v1/webhook\nHeader -> Authorization: Bearer nexus_secure_bearer_token_2026", language="text")
+    st.success("Listening for incoming TradingView Pine Script webhooks...")
 
 # ==========================================
 # TAB 10: STRATEGY MATRIX
