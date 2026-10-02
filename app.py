@@ -6,11 +6,16 @@ import plotly.express as px
 import json
 import os
 import psycopg2
-import yfinance as yf
 from datetime import datetime, timedelta
 import streamlit.components.v1 as components
 from db import CloudDatabaseManager
 from execution import BrokerExecutionEngine
+
+# --- SAFE YFINANCE IMPORT ---
+try:
+    import yfinance as yf
+except ImportError:
+    yf = None
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -181,12 +186,13 @@ if not open_trades.empty:
             
             allocated_margin += (entry * qty)
             
-            # Fetch Current Live Price
-            data = yf.Ticker(tick).history(period="1d", interval="1m")
-            if not data.empty:
-                curr_price = float(data['Close'].iloc[-1])
-                trade_pnl = (curr_price - entry) * qty if act == "BUY" else (entry - curr_price) * qty
-                unrealized_pnl += trade_pnl
+            # Fetch Current Live Price safely
+            if yf is not None:
+                data = yf.Ticker(tick).history(period="1d", interval="1m")
+                if not data.empty:
+                    curr_price = float(data['Close'].iloc[-1])
+                    trade_pnl = (curr_price - entry) * qty if act == "BUY" else (entry - curr_price) * qty
+                    unrealized_pnl += trade_pnl
         except Exception:
             pass
 
@@ -337,7 +343,7 @@ with tab1:
     components.html(tv_html, height=570)
 
 # ==========================================
-# TAB 02: AI SETUP MATRIX (WITH DIRECT DATABASE EXECUTION & INSTANT RERUN)
+# TAB 02: AI SETUP MATRIX
 # ==========================================
 with tab2:
     st.subheader("🎯 Real-Time AI Trade Signals & Confluence Matrix")
@@ -431,7 +437,7 @@ with tab2:
 
     st.divider()
 
-    # --- ONE-CLICK INSTANT TRADE EXECUTION PANEL WITH DIRECT DATABASE SAVE ---
+    # --- ONE-CLICK INSTANT TRADE EXECUTION PANEL ---
     st.markdown(f"### ⚡ AI-Recommended Dynamic Bracket Order: **{selected_ticker}**")
     
     trade_side = str(selected_row.get("Action", "BUY")).upper()
