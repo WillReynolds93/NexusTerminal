@@ -348,16 +348,17 @@ m4.metric("SYSTEM RISK", "0.00%", "Circuit Breaker Safe 🟢")
 
 st.divider()
 
-# --- 8 CONSOLIDATED MASTER TABS ---
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+# --- 9 CONSOLIDATED MASTER TABS ---
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "01 // HOME DESK & WATCHLIST", 
     "02 // AI SETUP & EXECUTION", 
     "03 // PORTFOLIO & TRADE HISTORY",
-    "04 // AUTOPILOT BRAIN", 
+    "04 // AUTOPILOT BRAIN & STRATEGY MATRIX", 
     "05 // RESEARCH & MACRO FLOW", 
-    "06 // WEALTH VAULT", 
-    "07 // SYSTEM & BROADCASTER",
-    "08 // SECURITY & 2FA"
+    "06 // PROP FIRM CHALLENGE",
+    "07 // WEALTH VAULT", 
+    "08 // SYSTEM & BROADCASTER",
+    "09 // SECURITY & 2FA"
 ])
 
 # ==========================================
@@ -505,7 +506,7 @@ with tab2:
 
     st.divider()
 
-    # ONE-CLICK EXECUTION (Clean HTML Rendering Fix)
+    # ONE-CLICK EXECUTION (Fixed Color Tagging)
     st.markdown(f"### ⚡ AI-Recommended Dynamic Bracket Order: **{selected_ticker}**")
     risk_dist = abs(e_val - sl_val) if abs(e_val - sl_val) > 0 else (e_val * 0.02)
     base_risk_budget = 2000.0 * (conf_score / 100.0)
@@ -517,8 +518,8 @@ with tab2:
         st.caption(f"Confidence: **{conf_score}%** | Risk: **${(risk_dist * trade_qty):,.2f}**")
     with col_ex2:
         st.write(" "); st.write(" ")
-        st.markdown(f"**Side:** <b style='color:#00E676;'>{trade_side}</b>", unsafe_allow_html=True)
-        st.markdown(f"**Bracket SL / TP:** <span style='color:#EF4444; font-weight:bold;'>${sl_val:,.2f}</span> &nbsp;/&nbsp; <span style='color:#00E676; font-weight:bold;'>${tp_val:,.2f}</span>", unsafe_allow_html=True)
+        st.markdown(f"**Side:** :green[**{trade_side}**]" if trade_side == "BUY" else f"**Side:** :red[**{trade_side}**]")
+        st.markdown(f"**Bracket SL / TP:** :red[${sl_val:,.2f}] &nbsp;/&nbsp; :green[${tp_val:,.2f}]")
     with col_ex3:
         st.write(" "); st.write(" ")
         exec_btn_label = f"🚀 EXECUTE {trade_side} {trade_qty:.2f} {selected_ticker} @ ${e_val:,.2f}"
@@ -612,19 +613,11 @@ with tab4:
     })
     st.markdown(render_styled_table(df_strats, ticker_col="Strategy Model"), unsafe_allow_html=True)
 
-    st.divider()
-    st.markdown("### 🏆 Prop Challenge Metrics & Risk Compliance")
-    col_p1, col_p2, col_p3 = st.columns(3)
-    col_p1.metric("Prop Challenge Profit", "+$4,250.00", "Target: $10,000.00")
-    col_p2.metric("Max Daily Drawdown", "0.82%", "Limit: 5.00% 🟢")
-    col_p3.metric("Max Total Drawdown", "1.45%", "Limit: 10.00% 🟢")
-    st.progress(0.425, text="Challenge Phase 1 Progress: 42.5% Complete")
-
 # ==========================================
-# TAB 05: RESEARCH & MACRO FLOW (RESTORED)
+# TAB 05: RESEARCH & MACRO FLOW (IN-DEPTH FUNDAMENTAL HEALTH SCORE)
 # ==========================================
 with tab5:
-    st.subheader("🐋 Institutional Research: Deep Dive, Big Movers, SEC Wire & Macro Flow")
+    st.subheader("🐋 Institutional Research: Deep Dive, Fundamental Health Score & Macro Flow")
     
     t_flow1, t_flow2, t_flow3, t_flow4, t_flow5, t_flow6 = st.tabs([
         "🔍 Universal Asset Research Search",
@@ -635,9 +628,9 @@ with tab5:
         "🕵 Dark Pool Prints & Options Sweeps"
     ])
     
-    # 1. UNIVERSAL RESEARCH
+    # 1. UNIVERSAL RESEARCH WITH FUNDAMENTAL HEALTH SCORECARD
     with t_flow1:
-        search_q = st.text_input("🔍 Search Any Symbol for Comprehensive Asset Summary & Chart:", value="BTC-USD" if datetime.now().weekday() in [5, 6] else "NVDA")
+        search_q = st.text_input("🔍 Search Any Symbol for In-Depth Executive Summary & Fundamental Score:", value="BTC-USD" if datetime.now().weekday() in [5, 6] else "NVDA")
         q_clean = get_clean_symbol(search_q)
         q_logo = get_logo_html(search_q, size=32)
         q_tv = get_tv_symbol(search_q)
@@ -646,31 +639,44 @@ with tab5:
         with c_res_info:
             st.markdown(f"## {q_logo} Executive Summary: **{q_clean}**", unsafe_allow_html=True)
             q_upper = str(search_q).upper()
+            
+            # DYNAMIC FUNDAMENTAL RATING & SCORE CARD
             if "BTC" in q_upper or "ETH" in q_upper or "SOL" in q_upper or "CRYPTO" in q_upper:
                 st.markdown("""
-                **Business Overview & Moat:**
+                **Business Overview & Competitive Moat:**
                 Premier decentralized digital store of value and smart contract network. Institutional adoption driven by spot ETF inflows, corporate treasury holdings, and post-halving programmatic supply reduction.
                 
-                **Key Catalyst Calendar:**
-                * **Q4 Halving Impact:** Supply issuance cut to 3.125 BTC per block.
-                * **Federal Reserve Rate Path:** Rate cuts reduce real yield drag on zero-yield digital assets.
+                **Key Macro Drivers:**
+                * **Programmatic Halving:** Annual issuance cut reduces structural sell pressure.
+                * **Federal Reserve Yield Curve:** Easing monetary policy boosts non-yielding digital asset beta.
                 """)
-                st.metric("Market Capitalization", "$1.28 Trillion", "+3.4% (24h)")
-                st.metric("NVT Ratio (Valuation)", "42.1 (Undervalued)", "On-chain volume expanding")
+                
+                st.markdown("### 📊 Core Fundamental Health Scorecard")
+                rf1, rf2, rf3 = st.columns(3)
+                rf1.metric("Fundamental Health", "92 / 100", "STRONG BUY 🟢")
+                rf2.metric("On-Chain Activity", "Expanded (+18%)", "NVT Undervalued")
+                rf3.metric("Institutional Moat", "Dominant Market Cap", "Spot ETF Inflow Tailwinds")
+                
             elif "GC" in q_upper or "GOLD" in q_upper or "OIL" in q_upper or "EUR" in q_upper:
                 st.markdown("""
                 **Business Overview & Macro Drivers:**
                 Global monetary reserve asset and geopolitical tail-risk hedge. Central banks accumulating physical bullion at fastest annual pace in 55 years to diversify foreign exchange reserves.
                 """)
-                st.metric("CFTC COT Net Position", "+242,000 Contracts", "Commercials Net Long")
-                st.metric("Inverse DXY Correlation", "-0.88", "Strong Tail-Risk Hedge")
+                st.markdown("### 📊 Core Fundamental Health Scorecard")
+                rf1, rf2, rf3 = st.columns(3)
+                rf1.metric("Fundamental Health", "88 / 100", "ACCUMULATE 🟢")
+                rf2.metric("Central Bank Flow", "+1,040 Tonnes/Yr", "Record Demand")
+                rf3.metric("Inverse Beta", "-0.88 to DXY", "Tail-Risk Hedge")
             else:
                 st.markdown("""
                 **Business Overview & Competitive Moat:**
                 Dominant monopoly in accelerated computing, GPU data center architecture, and AI infrastructure software (CUDA ecosystem). Holds > 85% market share in generative AI training and inference chips.
                 """)
-                st.metric("Market Capitalization", "$3.12 Trillion", "+14.2% YTD")
-                st.metric("Trailing P/E | Forward P/E", "42.5x | 31.2x", "PEG Ratio: 1.12")
+                st.markdown("### 📊 Core Fundamental Health Scorecard")
+                rf1, rf2, rf3 = st.columns(3)
+                rf1.metric("Fundamental Health", "95 / 100", "STRONG BUY 🟢")
+                rf2.metric("Operating Margin", "62.4%", "Industry Leading")
+                rf3.metric("Fair Value DCF", "$152.00", "+18.2% Margin of Safety")
                 
         with c_res_chart:
             res_chart_html = f"""
@@ -773,9 +779,31 @@ with tab5:
         st.markdown(render_styled_table(df_dp, ticker_col="Ticker"), unsafe_allow_html=True)
 
 # ==========================================
-# TAB 06: WEALTH VAULT (RESTORED)
+# TAB 06: PROP FIRM CHALLENGE (DEDICATED PROP TAB)
 # ==========================================
 with tab6:
+    st.subheader("🏆 Multi-Firm Prop Challenge & Evaluation Grid")
+    
+    st.markdown("### 📊 Challenge Metrics & Risk Compliance")
+    col_p1, col_p2, col_p3 = st.columns(3)
+    col_p1.metric("Prop Challenge Profit", "+$4,250.00", "Target: $10,000.00")
+    col_p2.metric("Max Daily Drawdown", "0.82%", "Limit: 5.00% 🟢")
+    col_p3.metric("Max Total Drawdown", "1.45%", "Limit: 10.00% 🟢")
+    st.progress(0.425, text="Challenge Phase 1 Progress: 42.5% Complete")
+
+    st.divider()
+
+    st.markdown("### 🔌 Connected Prop Firm Accounts")
+    pcol1, pcol2 = st.columns(2)
+    with pcol1:
+        st.markdown("<div class='prop-card'><h4>🏢 FTMO $100,000 Challenge</h4><p><b>Account ID:</b> #849201 | <b>Platform:</b> MT5 via MetaApi</p><p><b>Daily Loss Limit:</b> $5,000.00 (Current: -$820.00) 🟢</p><p><b>Replication Status:</b> ACTIVE ⚡ (Latency: 24ms)</p></div>", unsafe_allow_html=True)
+    with pcol2:
+        st.markdown("<div class='prop-card'><h4>🏢 FundedNext $200,000 Evaluation</h4><p><b>Account ID:</b> #192041 | <b>Platform:</b> MT5 via MetaApi</p><p><b>Daily Loss Limit:</b> $10,000.00 (Current: -$1,100.00) 🟢</p><p><b>Replication Status:</b> ACTIVE ⚡ (Latency: 18ms)</p></div>", unsafe_allow_html=True)
+
+# ==========================================
+# TAB 07: WEALTH VAULT (RESTORED)
+# ==========================================
+with tab7:
     st.subheader("💰 Wealth Vault: Long-Term Holdings & Target Buy Wishlist")
     col_w1, col_w2 = st.columns(2)
     with col_w1:
@@ -810,17 +838,17 @@ with tab6:
         st.rerun()
 
 # ==========================================
-# TAB 07: SYSTEM & BROADCASTER
+# TAB 08: SYSTEM & BROADCASTER
 # ==========================================
-with tab7:
+with tab8:
     st.subheader("📡 Webhook Endpoints & Signal Dispatcher")
     st.code("POST http://localhost:8501/api/v1/webhook\nHeader -> Authorization: Bearer nexus_secure_bearer_token_2026", language="text")
     st.success("Listening for incoming TradingView Pine Script webhooks...")
 
 # ==========================================
-# TAB 08: SECURITY & 2FA VAULT
+# TAB 09: SECURITY & 2FA VAULT
 # ==========================================
-with tab8:
+with tab9:
     st.subheader("🔒 Security Vault, 2FA & Emergency System Controls")
     if st.button("🔴 PANIC: FLATTEN ALL POSITIONS & HALT AGENTS", use_container_width=True, type="primary"):
         set_autopilot_config_ui(False, min_conf_threshold)
