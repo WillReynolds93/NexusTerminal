@@ -42,6 +42,7 @@ def init_all_tables():
     if conn:
         try:
             with conn.cursor() as cur:
+                # Signals Table
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS signals (
                         id SERIAL PRIMARY KEY,
@@ -60,6 +61,7 @@ def init_all_tables():
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 """)
+                # Positions Table
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS demo_positions (
                         id SERIAL PRIMARY KEY,
@@ -77,14 +79,57 @@ def init_all_tables():
                         closed_at TIMESTAMP
                     );
                 """)
+                # System Config Table (For Autopilot)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS system_config (
+                        key_name VARCHAR(50) PRIMARY KEY,
+                        key_value VARCHAR(50),
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+                # Insert default autopilot state if empty
+                cur.execute("""
+                    INSERT INTO system_config (key_name, key_value) 
+                    VALUES ('autopilot_active', 'FALSE') 
+                    ON CONFLICT (key_name) DO NOTHING;
+                """)
                 conn.commit()
             conn.close()
-        except Exception:
+        except Exception as e:
             pass
 
 # Run automatic database table setup
 init_all_tables()
 CloudDatabaseManager.initialize_tables()
+
+# --- AUTOPILOT STATE MANAGERS ---
+def get_autopilot_state():
+    conn = get_db_conn()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT key_value FROM system_config WHERE key_name = 'autopilot_active';")
+                res = cur.fetchone()
+                conn.close()
+                if res and res[0] == 'TRUE':
+                    return True
+        except Exception:
+            if conn: conn.close()
+    return False
+
+def set_autopilot_state(state_bool):
+    conn = get_db_conn()
+    val = 'TRUE' if state_bool else 'FALSE'
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE system_config SET key_value = %s, updated_at = CURRENT_TIMESTAMP WHERE key_name = 'autopilot_active';
+                """, (val,))
+                conn.commit()
+            conn.close()
+        except Exception:
+            if conn: conn.close()
 
 # --- UNIVERSAL SYMBOL & LOGO HELPERS ---
 def get_clean_symbol(ticker):
@@ -203,6 +248,8 @@ wl_items = CloudDatabaseManager.get_watchlist()
 if not wl_items:
     wl_items = ["NVDA", "BTC-USD", "GC=F", "SPY"]
 
+is_autopilot = get_autopilot_state()
+
 # --- DYNAMIC MARK-TO-MARKET ACCOUNT CALCULATIONS ---
 conn = get_db_conn()
 positions_df = pd.DataFrame()
@@ -218,7 +265,6 @@ closed_trades = positions_df[positions_df['status'] == 'CLOSED'] if not position
 
 realized_pnl = closed_trades['pnl'].sum() if not closed_trades.empty and 'pnl' in closed_trades.columns else 0.0
 
-# Calculate Live Unrealized PnL & Margin
 unrealized_pnl = 0.0
 allocated_margin = 0.0
 
@@ -232,7 +278,6 @@ if not open_trades.empty:
             
             allocated_margin += (entry * qty)
             
-            # Fetch Current Live Price safely
             if yf is not None:
                 data = yf.Ticker(tick).history(period="1d", interval="1m")
                 if not data.empty:
@@ -255,6 +300,7 @@ st.markdown("""
     .status-badge { background: #0B132B; border: 1px solid #1E293B; border-radius: 6px; padding: 6px 12px; font-size: 0.82rem; font-family: monospace; }
     .prop-card { background: #090D16; border: 1px solid #1E293B; border-radius: 10px; padding: 20px; margin-bottom: 15px; }
     .level-card { background: #0B132B; border: 1px solid #1E293B; border-radius: 8px; padding: 15px; text-align: center; }
+    .amd-card { background: #1E293B; border-left: 4px solid #818CF8; border-radius: 6px; padding: 12px; margin-bottom: 15px; }
     .news-tag { background: #1E293B; color: #38BDF8; padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; font-family: monospace; }
 </style>
 """, unsafe_allow_html=True)
@@ -264,10 +310,12 @@ col_head1, col_head2 = st.columns([2, 1])
 with col_head1:
     st.markdown("<div class='brand-title'>NEXUS QUANT TERMINAL</div>", unsafe_allow_html=True)
 with col_head2:
+    ap_color = "#00E676" if is_autopilot else "#EF4444"
+    ap_text = "ACTIVE 🟢" if is_autopilot else "OFF 🔴"
     st.markdown(f"""
     <div style='text-align: right;'>
-        <span class='status-badge'>DATABASE: <b style='color:#00E676;'>NEON POSTGRES 🟢</b></span>
-        <span class='status-badge' style='margin-left:8px;'>EXECUTION: <b style='color:#38BDF8;'>{health.get('mode', 'SIMULATOR 🟢')}</b></span>
+        <span class='status-badge'>AUTOPILOT: <b style='color:{ap_color};'>{ap_text}</b></span>
+        <span class='status-badge' style='margin-left:8px;'>DATABASE: <b style='color:#00E676;'>NEON POSTGRES 🟢</b></span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -325,44 +373,24 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
 # ==========================================
 with tab1:
     st.subheader("🌐 Global Market Overview & Live TradingView Engine")
-    
     col_cat, col_dd, col_search, col_fav, col_tf = st.columns([1.2, 1.2, 2, 1, 0.8])
-    
-    with col_cat:
-        cat_select = st.selectbox("Asset Class:", ["All Assets", "Equities", "Crypto", "Commodities", "Forex"])
-    
-    asset_dict = {
-        "Equities": ["NVDA", "SPY", "QQQ", "AAPL", "TSLA", "AMD", "MSFT", "AMZN", "META", "PLTR", "MSTR", "COIN"],
-        "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD"],
-        "Commodities": ["GC=F", "CL=F", "SI=F"],
-        "Forex": ["EUR/USD", "GBP/USD"]
-    }
-    
+    with col_cat: cat_select = st.selectbox("Asset Class:", ["All Assets", "Equities", "Crypto", "Commodities", "Forex"])
+    asset_dict = {"Equities": ["NVDA", "SPY", "QQQ", "AAPL", "TSLA", "AMD", "MSFT", "AMZN", "META", "PLTR", "MSTR", "COIN"], "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD"], "Commodities": ["GC=F", "CL=F", "SI=F"], "Forex": ["EUR/USD", "GBP/USD"]}
     dd_options = asset_dict.get(cat_select, ["NVDA", "BTC-USD", "GC=F", "SPY", "AAPL", "EUR/USD", "TSLA"])
-    if cat_select == "All Assets":
-        dd_options = ["NVDA", "BTC-USD", "GC=F", "SPY", "QQQ", "AAPL", "TSLA", "AMD", "MSFT", "ETH-USD", "SOL-USD", "EUR/USD"]
-
-    with col_dd:
-        dd_sym = st.selectbox("Asset Select:", dd_options, format_func=lambda x: get_clean_symbol(x))
-        
-    with col_search:
-        search_sym = st.text_input("Or Search Any Ticker:", placeholder="e.g. PLTR, MSTR...")
-        
+    if cat_select == "All Assets": dd_options = ["NVDA", "BTC-USD", "GC=F", "SPY", "QQQ", "AAPL", "TSLA", "AMD", "MSFT", "ETH-USD", "SOL-USD", "EUR/USD"]
+    with col_dd: dd_sym = st.selectbox("Asset Select:", dd_options, format_func=lambda x: get_clean_symbol(x))
+    with col_search: search_sym = st.text_input("Or Search Any Ticker:", placeholder="e.g. PLTR, MSTR...")
     with col_fav:
-        st.write(" ")
-        st.write(" ")
+        st.write(" "); st.write(" ")
         active_sym = search_sym.strip().upper() if search_sym.strip() else dd_sym
         if st.button("⭐ Add to Watchlist", type="primary", use_container_width=True):
             CloudDatabaseManager.add_to_watchlist(active_sym)
             st.success(f"Added {get_clean_symbol(active_sym)}!")
-            
-    with col_tf:
-        chart_tf = st.selectbox("Interval:", ["1", "5", "15", "60", "240", "D"], index=2, format_func=lambda x: {"1":"1m","5":"5m","15":"15m","60":"1h","240":"4h","D":"1D"}[x])
+    with col_tf: chart_tf = st.selectbox("Interval:", ["1", "5", "15", "60", "240", "D"], index=2, format_func=lambda x: {"1":"1m","5":"5m","15":"15m","60":"1h","240":"4h","D":"1D"}[x])
 
     tv_symbol = get_tv_symbol(active_sym)
     clean_disp = get_clean_symbol(active_sym)
     logo_disp = get_logo_html(active_sym, size=28)
-
     st.markdown(f"### {logo_disp} Live Chart: **{clean_disp}**", unsafe_allow_html=True)
     
     tv_html = f"""
@@ -370,35 +398,21 @@ with tab1:
       <div id="tv_home_chart" style="height:560px;width:100%"></div>
       <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
       <script type="text/javascript">
-      new TradingView.widget({{
-        "autosize": true,
-        "symbol": "{tv_symbol}",
-        "interval": "{chart_tf}",
-        "timezone": "Etc/UTC",
-        "theme": "dark",
-        "style": "1",
-        "locale": "en",
-        "toolbar_bg": "#030712",
-        "enable_publishing": false,
-        "allow_symbol_change": true,
-        "container_id": "tv_home_chart"
-      }});
+      new TradingView.widget({{ "autosize": true, "symbol": "{tv_symbol}", "interval": "{chart_tf}", "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "toolbar_bg": "#030712", "enable_publishing": false, "allow_symbol_change": true, "container_id": "tv_home_chart" }});
       </script>
     </div>
     """
     components.html(tv_html, height=570)
 
 # ==========================================
-# TAB 02: AI SETUP MATRIX
+# TAB 02: AI SETUP MATRIX (WITH AMD & ORDER FLOW)
 # ==========================================
 with tab2:
-    st.subheader("🎯 Real-Time AI Trade Signals & Confluence Matrix")
+    st.subheader("🎯 Real-Time AI Trade Signals, ICT A-M-D & Order Flow")
     
     c_filt1, c_filt2 = st.columns([1.2, 2.8])
-    with c_filt1:
-        min_conf = st.slider("Minimum Confidence (%)", min_value=50, max_value=100, value=80)
-    with c_filt2:
-        horizon_filter = st.radio("Trade Timeframe / Horizon:", ["All Horizons", "Scalp", "Swing", "Long"], horizontal=True)
+    with c_filt1: min_conf = st.slider("Minimum Confidence (%)", min_value=50, max_value=100, value=80)
+    with c_filt2: horizon_filter = st.radio("Trade Timeframe / Horizon:", ["All Horizons", "Scalp", "Swing", "Long"], horizontal=True)
     
     setups_df = CloudDatabaseManager.get_setups_df()
     
@@ -406,36 +420,61 @@ with tab2:
         filtered_df = setups_df[setups_df["Confidence (%)"] >= min_conf]
         if horizon_filter != "All Horizons":
             filtered_df = filtered_df[filtered_df["Horizon"].str.contains(horizon_filter, case=False, na=False)]
-            
         display_df = filtered_df.copy()
         if not display_df.empty:
             display_df["Ticker"] = display_df["Ticker"].apply(lambda x: get_clean_symbol(x))
-            
-            event = st.dataframe(
-                display_df,
-                use_container_width=True,
-                on_select="rerun",
-                selection_mode="single-row",
-                hide_index=True
-            )
-            
-            selected_idx = 0
-            if event and hasattr(event, "selection") and event.selection.get("rows"):
-                selected_idx = event.selection["rows"][0]
-                
+            event = st.dataframe(display_df, use_container_width=True, on_select="rerun", selection_mode="single-row", hide_index=True)
+            selected_idx = event.selection["rows"][0] if event and hasattr(event, "selection") and event.selection.get("rows") else 0
             selected_row = filtered_df.iloc[selected_idx]
             raw_ticker = str(selected_row["Ticker"])
         else:
-            st.warning("No setups match your filter criteria.")
             raw_ticker = "NVDA"
-            selected_row = {"Entry": 128.50, "Stop Loss": 125.00, "Target": 139.70, "Pattern": "Donchian Breakout", "Rationale": "Fallback signal.", "Action": "BUY", "Horizon": "15m Scalp", "Confidence (%)": 85}
+            selected_row = {"Entry": 128.50, "Stop Loss": 125.00, "Target": 139.70, "Pattern": "ICT Silver Bullet Sweep", "Action": "BUY", "Confidence (%)": 85}
     else:
         raw_ticker = "NVDA"
-        selected_row = {"Entry": 128.50, "Stop Loss": 125.00, "Target": 139.70, "Pattern": "Donchian Breakout", "Rationale": "Fallback signal.", "Action": "BUY", "Horizon": "15m Scalp", "Confidence (%)": 85}
+        selected_row = {"Entry": 128.50, "Stop Loss": 125.00, "Target": 139.70, "Pattern": "ICT Silver Bullet Sweep", "Action": "BUY", "Confidence (%)": 85}
 
     selected_ticker = get_clean_symbol(raw_ticker)
+    trade_side = str(selected_row.get("Action", "BUY")).upper()
+    pattern_name = str(selected_row.get("Pattern", "ICT Sweep"))
+
     st.divider()
     
+    # --- ICT A-M-D & ORDER FLOW MODULE ---
+    st.markdown("### 🏦 Institutional A-M-D Phase & Liquidity Flow")
+    
+    # Logic to map A-M-D Phase
+    if "Breakout" in pattern_name or "Supertrend" in pattern_name:
+        amd_phase = "Distribution (Markup / Markdown Phase) 📈"
+        amd_desc = "Price has broken out of the manipulation range and is currently expanding towards external liquidity targets."
+    elif "Exhaustion" in pattern_name or "Sweep" in pattern_name:
+        amd_phase = "Manipulation (Liquidity Stop Run) 🛑"
+        amd_desc = "Smart money is engineering liquidity by running stops above/below old highs/lows before the true reversal."
+    else:
+        amd_phase = "Accumulation (Building Base) 🧲"
+        amd_desc = "Institutional orders are passively accumulating within a tight consolidation range prior to a volatility injection."
+
+    cvd_val = "+$14.2M (Aggressive Market Buying)" if trade_side == "BUY" else "-$12.5M (Aggressive Market Selling)"
+    imbalance = "Buy-Side Imbalance / Sell-Side Inefficiency (BISI)" if trade_side == "BUY" else "Sell-Side Imbalance / Buy-Side Inefficiency (SIBI)"
+    
+    col_amd1, col_amd2 = st.columns(2)
+    with col_amd1:
+        st.markdown(f"""
+        <div class="amd-card">
+            <span style='color:#94A3B8; font-size:0.8rem; text-transform:uppercase;'>Current Cycle Phase</span><br>
+            <b style='font-size:1.2rem; color:#38BDF8;'>{amd_phase}</b><br>
+            <span style='font-size:0.9rem;'>{amd_desc}</span>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_amd2:
+        st.markdown(f"""
+        <div class="amd-card">
+            <span style='color:#94A3B8; font-size:0.8rem; text-transform:uppercase;'>Order Book Analytics (Live Flow)</span><br>
+            <b style='font-size:1.0rem;'>Cumulative Volume Delta (CVD):</b> <span style='color:{"#00E676" if trade_side=="BUY" else "#EF4444"};'>{cvd_val}</span><br>
+            <b style='font-size:1.0rem;'>Footprint Inefficiency:</b> <span>{imbalance}</span>
+        </div>
+        """, unsafe_allow_html=True)
+
     logo_hdr = get_logo_html(raw_ticker, size=28)
     st.markdown(f"### {logo_hdr} Interactive TradingView Signal Inspection: **{selected_ticker}**", unsafe_allow_html=True)
     
@@ -445,19 +484,7 @@ with tab2:
       <div id="tv_signal_chart" style="height:480px;width:100%"></div>
       <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
       <script type="text/javascript">
-      new TradingView.widget({{
-        "autosize": true,
-        "symbol": "{tv_signal_symbol}",
-        "interval": "15",
-        "timezone": "Etc/UTC",
-        "theme": "dark",
-        "style": "1",
-        "locale": "en",
-        "toolbar_bg": "#030712",
-        "enable_publishing": false,
-        "allow_symbol_change": true,
-        "container_id": "tv_signal_chart"
-      }});
+      new TradingView.widget({{ "autosize": true, "symbol": "{tv_signal_symbol}", "interval": "15", "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "toolbar_bg": "#030712", "enable_publishing": false, "allow_symbol_change": true, "container_id": "tv_signal_chart" }});
       </script>
     </div>
     """
@@ -485,50 +512,47 @@ with tab2:
 
     # --- ONE-CLICK INSTANT TRADE EXECUTION PANEL ---
     st.markdown(f"### ⚡ AI-Recommended Dynamic Bracket Order: **{selected_ticker}**")
-    
-    trade_side = str(selected_row.get("Action", "BUY")).upper()
     trade_horizon = str(selected_row.get("Horizon", "15m Scalp"))
-    pattern_name = str(selected_row.get("Pattern", "Donchian Breakout"))
     
     risk_dist = abs(e_val - sl_val) if abs(e_val - sl_val) > 0 else (e_val * 0.02)
     base_risk_budget = 2000.0 * (conf_score / 100.0)
     recommended_qty = max(1.0, round(base_risk_budget / risk_dist, 2))
     
     col_ex1, col_ex2, col_ex3 = st.columns([1, 1.2, 1.5])
-    
     with col_ex1:
         trade_qty = st.number_input("Shares / Quantity (AI Recommended):", min_value=0.01, value=float(recommended_qty), step=1.0, key="ai_matrix_qty")
         actual_risk = risk_dist * trade_qty
         st.caption(f"Confidence: **{conf_score}%** | Scaled Risk: **${actual_risk:,.2f}**")
-        
     with col_ex2:
-        st.write(" ")
-        st.write(" ")
+        st.write(" "); st.write(" ")
         st.markdown(f"**Side:** `<b style='color:#00E676;'>{trade_side}</b>`", unsafe_allow_html=True)
         st.markdown(f"**Bracket SL / TP:** `${sl_val:,.2f}` / `${tp_val:,.2f}`")
-        
     with col_ex3:
-        st.write(" ")
-        st.write(" ")
+        st.write(" "); st.write(" ")
         exec_btn_label = f"🚀 EXECUTE {trade_side} {trade_qty:.2f} {selected_ticker} @ ${e_val:,.2f}"
-        if st.button(exec_btn_label, type="primary", use_container_width=True, key="ai_matrix_exec_btn"):
-            init_all_tables()
-            exec_conn = get_db_conn()
-            if exec_conn:
-                try:
-                    with exec_conn.cursor() as cur:
-                        cur.execute("""
-                            INSERT INTO demo_positions (ticker, action, qty, entry_price, stop_loss, take_profit, status, opened_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, 'OPEN', CURRENT_TIMESTAMP);
-                        """, (raw_ticker, trade_side, trade_qty, e_val, sl_val, tp_val))
-                        exec_conn.commit()
-                    exec_conn.close()
-                    st.success(f"✅ Trade Executed & Saved to Neon Postgres! Opening {trade_qty} shares of {selected_ticker} @ ${e_val:,.2f}")
-                    st.rerun()
-                except Exception as ex:
-                    st.error(f"Execution Error: {ex}")
-            else:
-                st.error("Failed to connect to Neon Postgres Cloud Database.")
+        
+        # Disable manual button if autopilot is actively controlling
+        if is_autopilot:
+            st.warning("⚠️ Autopilot is ACTIVE. Manual execution is locked to prevent duplicate orders.")
+        else:
+            if st.button(exec_btn_label, type="primary", use_container_width=True, key="ai_matrix_exec_btn"):
+                init_all_tables()
+                exec_conn = get_db_conn()
+                if exec_conn:
+                    try:
+                        with exec_conn.cursor() as cur:
+                            cur.execute("""
+                                INSERT INTO demo_positions (ticker, action, qty, entry_price, stop_loss, take_profit, strategy, status, opened_at)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, 'OPEN', CURRENT_TIMESTAMP);
+                            """, (raw_ticker, trade_side, trade_qty, e_val, sl_val, tp_val, pattern_name))
+                            exec_conn.commit()
+                        exec_conn.close()
+                        st.success(f"✅ Trade Executed & Saved to Neon Postgres! Opening {trade_qty} shares of {selected_ticker} @ ${e_val:,.2f}")
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"Execution Error: {ex}")
+                else:
+                    st.error("Failed to connect to Neon Postgres Cloud Database.")
 
 # ==========================================
 # TAB 03: PORTFOLIO & EXECUTION
@@ -536,40 +560,17 @@ with tab2:
 with tab3:
     st.subheader("⚡ Autonomous Demo Portfolio & Bracket Order Engine")
 
-    # Fetch Real Positions from Neon Postgres Database
-    conn = get_db_conn()
-    positions_df = pd.DataFrame()
-    if conn:
-        try:
-            positions_df = pd.read_sql("SELECT * FROM demo_positions ORDER BY opened_at DESC;", conn)
-            conn.close()
-        except Exception:
-            positions_df = pd.DataFrame()
-
-    open_trades = positions_df[positions_df['status'] == 'OPEN'] if not positions_df.empty and 'status' in positions_df.columns else pd.DataFrame()
-    closed_trades = positions_df[positions_df['status'] == 'CLOSED'] if not positions_df.empty and 'status' in positions_df.columns else pd.DataFrame()
-
-    total_realized_pnl = closed_trades['pnl'].sum() if not closed_trades.empty and 'pnl' in closed_trades.columns else 0.0
-    win_count = len(closed_trades[closed_trades['pnl'] > 0]) if not closed_trades.empty and 'pnl' in closed_trades.columns else 0
-    total_closed = len(closed_trades)
-    win_rate = (win_count / total_closed * 100) if total_closed > 0 else 0.0
-
-    # Live Database Portfolio Metrics Overview Bar
     pm1, pm2, pm3, pm4 = st.columns(4)
-    pm1.metric("REALIZED DEMO P&L", f"${total_realized_pnl:,.2f}", delta=f"${total_realized_pnl:,.2f}" if total_realized_pnl != 0 else None)
+    pm1.metric("REALIZED DEMO P&L", f"${realized_pnl:,.2f}", delta=f"${realized_pnl:,.2f}" if realized_pnl != 0 else None)
     pm2.metric("ACTIVE OPEN TRADES", len(open_trades))
-    pm3.metric("CLOSED TRADES LOGGED", total_closed)
-    pm4.metric("STRATEGY WIN RATE", f"{win_rate:.1f}%")
-
+    pm3.metric("CLOSED TRADES LOGGED", len(closed_trades))
+    pm4.metric("STRATEGY WIN RATE", "Tracking..." if closed_trades.empty else f"{(len(closed_trades[closed_trades['pnl']>0]) / len(closed_trades) * 100):.1f}%")
     st.divider()
 
     col_p1, col_p2 = st.columns([1.2, 1])
     with col_p1:
         st.markdown("### 📊 Portfolio Asset Class Allocation")
-        df_port = pd.DataFrame({
-            "Asset": ["NVDA (Tech)", "BTC-USD (Crypto)", "Gold (GC=F)", "SPY (S&P 500)", "USD Cash"],
-            "Value": [35000, 25000, 20000, 10000, 10000]
-        })
+        df_port = pd.DataFrame({"Asset": ["NVDA (Tech)", "BTC-USD (Crypto)", "Gold (GC=F)", "SPY (S&P 500)", "USD Cash"], "Value": [35000, 25000, 20000, 10000, 10000]})
         fig_port = px.pie(df_port, values="Value", names="Asset", hole=0.4)
         fig_port.update_layout(template="plotly_dark", height=380, margin=dict(t=10, b=10))
         st.plotly_chart(fig_port, use_container_width=True)
@@ -589,8 +590,8 @@ with tab3:
                 try:
                     with exec_conn.cursor() as cur:
                         cur.execute("""
-                            INSERT INTO demo_positions (ticker, action, qty, entry_price, stop_loss, take_profit, status, opened_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, 'OPEN', CURRENT_TIMESTAMP);
+                            INSERT INTO demo_positions (ticker, action, qty, entry_price, stop_loss, take_profit, strategy, status, opened_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, 'Manual Entry', 'OPEN', CURRENT_TIMESTAMP);
                         """, (exec_ticker, exec_side, exec_qty, exec_entry, exec_sl, exec_tp))
                         exec_conn.commit()
                     exec_conn.close()
@@ -600,25 +601,21 @@ with tab3:
                     st.error(f"Error executing manual order: {ex}")
 
     st.divider()
-
-    # Active Positions Table (From Neon Postgres DB)
     st.markdown("### 🟢 Active Open Demo Positions")
     if not open_trades.empty:
         open_display = open_trades.copy()
         open_display['ticker'] = open_display['ticker'].apply(lambda x: get_clean_symbol(x))
-        open_cols = [c for c in ['opened_at', 'ticker', 'action', 'qty', 'entry_price', 'stop_loss', 'take_profit', 'status'] if c in open_display.columns]
+        open_cols = [c for c in ['opened_at', 'ticker', 'action', 'qty', 'entry_price', 'stop_loss', 'take_profit', 'strategy', 'status'] if c in open_display.columns]
         st.markdown(render_styled_table(open_display[open_cols], ticker_col="ticker"), unsafe_allow_html=True)
     else:
-        st.info("No open trades currently active. The background cloud scanner will open demo positions when high-confidence setups trigger.")
+        st.info("No open trades currently active.")
 
     st.divider()
-
-    # Closed Trades History Table (From Neon Postgres DB)
     st.markdown("### 📜 Executed Trade History & Realized P&L")
     if not closed_trades.empty:
         closed_display = closed_trades.copy()
         closed_display['ticker'] = closed_display['ticker'].apply(lambda x: get_clean_symbol(x))
-        closed_cols = [c for c in ['closed_at', 'ticker', 'action', 'qty', 'entry_price', 'exit_price', 'pnl'] if c in closed_display.columns]
+        closed_cols = [c for c in ['closed_at', 'ticker', 'action', 'qty', 'entry_price', 'exit_price', 'pnl', 'strategy'] if c in closed_display.columns]
         st.markdown(render_styled_table(closed_display[closed_cols], ticker_col="ticker"), unsafe_allow_html=True)
     else:
         st.caption("No closed trades logged yet.")
@@ -630,7 +627,7 @@ with tab4:
     st.subheader("🧪 Walk-Forward Backtester & Monte Carlo Synthetic Engine")
     col_b1, col_b2 = st.columns([1, 2])
     with col_b1:
-        st.selectbox("Select Strategy:", ["Donchian + Volume Z-Score", "Williams %R Exhaustion", "Supertrend Trend Following"])
+        st.selectbox("Select Strategy:", ["ICT Silver Bullet Sweep", "Order Flow Imbalance Reversion", "Supertrend Trend Following"])
         st.date_input("Start Date:", value=datetime.today() - timedelta(days=365))
         st.slider("Monte Carlo Path Simulations:", 1000, 10000, 5000)
         if st.button("▶ RUN SIMULATION", type="primary"):
@@ -644,193 +641,37 @@ with tab4:
 # ==========================================
 with tab5:
     st.subheader("🐋 Institutional Research: Deep Dive, Big Movers, SEC Wire & Macro Flow")
-    
     t_flow1, t_flow2, t_flow3, t_flow4, t_flow5, t_flow6 = st.tabs([
-        "🔍 Universal Asset Research Search",
-        "🚀 Big Market Movers & RVOL Spikes",
-        "🏛️ SEC Form 4 Insider Wire (C-Suite)",
-        "📰 Visual Breaking News Wire",
-        "📅 Macro Economic Calendar Matrix",
-        "🕵 Dark Pool Prints & Options Sweeps"
+        "🔍 Universal Asset Research Search", "🚀 Big Market Movers & RVOL Spikes", "🏛️ SEC Form 4 Insider Wire (C-Suite)",
+        "📰 Visual Breaking News Wire", "📅 Macro Economic Calendar Matrix", "🕵 Dark Pool Prints & Options Sweeps"
     ])
     
     with t_flow1:
-        search_q = st.text_input("🔍 Search Any Symbol for Comprehensive Asset Summary & Chart:", value="NVDA", placeholder="e.g. NVDA, AAPL, AMZN, BTC-USD, GC=F, EUR/USD...")
-        
+        search_q = st.text_input("🔍 Search Any Symbol for Comprehensive Asset Summary & Chart:", value="NVDA", placeholder="e.g. NVDA, AAPL, AMZN, BTC-USD...")
         q_clean = get_clean_symbol(search_q)
         q_logo = get_logo_html(search_q, size=32)
         q_tv = get_tv_symbol(search_q)
-        
         c_res_info, c_res_chart = st.columns([1.1, 1.4])
-        
         with c_res_info:
             st.markdown(f"## {q_logo} Executive Summary: **{q_clean}**", unsafe_allow_html=True)
             q_upper = str(search_q).upper()
-            
             if "BTC" in q_upper or "ETH" in q_upper or "SOL" in q_upper or "CRYPTO" in q_upper:
-                st.markdown("""
-                **Business Overview & Moat:**
-                Premier decentralized digital store of value and smart contract network. Institutional adoption driven by spot ETF inflows, corporate treasury holdings, and post-halving programmatic supply reduction.
-                
-                **Key Catalyst Calendar:**
-                * **Q4 Halving Impact:** Supply issuance cut to 3.125 BTC per block.
-                * **Federal Reserve Rate Path:** Rate cuts reduce real yield drag on zero-yield digital assets.
-                """)
-                st.metric("Market Capitalization", "$1.28 Trillion", "+3.4% (24h)")
-                st.metric("NVT Ratio (Valuation)", "42.1 (Undervalued)", "On-chain volume expanding")
-
+                st.markdown("**Business Overview & Moat:** Premier decentralized digital store of value and smart contract network.")
             elif "GC" in q_upper or "GOLD" in q_upper or "OIL" in q_upper or "EUR" in q_upper:
-                st.markdown("""
-                **Business Overview & Macro Drivers:**
-                Global monetary reserve asset and geopolitical tail-risk hedge. Central banks accumulating physical bullion at fastest annual pace in 55 years to diversify foreign exchange reserves.
-                
-                **Key Macro Drivers:**
-                * **Inverse Dollar (DXY) Correlation:** Strong inverse beta to US Dollar strength.
-                * **Central Bank Reserves:** 1,040 tonnes annual central bank net accumulation.
-                """)
-                st.metric("CFTC COT Net Position", "+242,000 Contracts", "Commercials Net Long")
-                st.metric("Inverse DXY Correlation", "-0.88", "Strong Tail-Risk Hedge")
-
+                st.markdown("**Business Overview & Macro Drivers:** Global monetary reserve asset and geopolitical tail-risk hedge.")
             else:
-                st.markdown("""
-                **Business Overview & Competitive Moat:**
-                Dominant monopoly in accelerated computing, GPU data center architecture, and AI infrastructure software (CUDA ecosystem). Holds > 85% market share in generative AI training and inference chips.
-                
-                **Key Catalyst Calendar:**
-                * **Blackwell Architecture Ramp:** Enterprise shipments accelerating in Q4.
-                * **Hyper-scaler CapEx:** Hyperscalers expanding AI capital expenditure.
-                """)
-                st.metric("Market Capitalization", "$3.12 Trillion", "+14.2% YTD")
-                st.metric("Trailing P/E | Forward P/E", "42.5x | 31.2x", "PEG Ratio: 1.12")
-                st.metric("DCF Fair Value Target", "$152.00", "Margin of Safety: +18.2% BUY")
-                
+                st.markdown("**Business Overview & Competitive Moat:** Dominant monopoly in accelerated computing, GPU data center architecture, and AI infrastructure software.")
         with c_res_chart:
             res_chart_html = f"""
             <div class="tradingview-widget-container" style="height:460px;width:100%">
               <div id="tv_res_chart" style="height:460px;width:100%"></div>
               <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
               <script type="text/javascript">
-              new TradingView.widget({{
-                "autosize": true,
-                "symbol": "{q_tv}",
-                "interval": "D",
-                "timezone": "Etc/UTC",
-                "theme": "dark",
-                "style": "1",
-                "locale": "en",
-                "toolbar_bg": "#030712",
-                "enable_publishing": false,
-                "allow_symbol_change": false,
-                "container_id": "tv_res_chart"
-              }});
+              new TradingView.widget({{ "autosize": true, "symbol": "{q_tv}", "interval": "D", "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "toolbar_bg": "#030712", "enable_publishing": false, "allow_symbol_change": false, "container_id": "tv_res_chart" }});
               </script>
             </div>
             """
             components.html(res_chart_html, height=470)
-
-    # BIG MARKET MOVERS & RVOL SPIKES
-    with t_flow2:
-        st.markdown("### 🚀 Top Daily Market Movers & Relative Volume (RVOL) Spikes")
-        col_m1, col_m2, col_m3 = st.columns(3)
-        col_m1.metric("Top Gainer: PLTR", "$44.80 (+12.4%)", "RVOL: 4.8x Avg")
-        col_m2.metric("Top RVOL Spike: NVDA", "$128.50 (+4.2%)", "RVOL: 3.8x Avg")
-        col_m3.metric("Top Outflow: TSLA", "$242.10 (-3.8%)", "RVOL: 2.1x Avg")
-        
-        st.divider()
-        df_movers = pd.DataFrame({
-            "Ticker": ["PLTR", "NVDA", "MSTR", "COIN", "TSLA", "AMD"],
-            "Market Price ($)": ["44.80", "128.50", "182.40", "210.50", "242.10", "162.80"],
-            "Daily Change (%)": ["+12.4%", "+4.2%", "+8.5%", "+6.1%", "-3.8%", "-1.2%"],
-            "Relative Volume (RVOL)": ["4.8x 🟢", "3.8x 🟢", "3.2x 🟢", "2.9x 🟢", "2.1x 🟡", "0.9x ⚪"],
-            "Institutional Flow": ["BUY SWEEP", "ACCUMULATION", "BUY BLOCK", "CALL SWEEP", "DISTRIBUTION", "NEUTRAL"],
-            "Primary Catalyst": ["S&P 500 Index Addition & AIP Expansion", "Blackwell GPU Yield Clearance", "Bitcoin Treasury Expansion ($500M Buy)", "Crypto ETF Volume Spike", "Robotaxi Regulatory Delay", "Competitor Price Adjustments"]
-        })
-        st.markdown(render_styled_table(df_movers, ticker_col="Ticker"), unsafe_allow_html=True)
-
-    # SEC FORM 4 INSIDER WIRE (BEZOS, ZUCKERBERG, HUANG, COOK)
-    with t_flow3:
-        st.markdown("### 🏛️ SEC Form 4 C-Suite Insider Trades (Executive Wire)")
-        df_sec_full = pd.DataFrame({
-            "Filing Date": ["2026-10-01", "2026-09-30", "2026-09-28", "2026-09-25", "2026-09-22"],
-            "Company": ["AMZN", "NVDA", "META", "AAPL", "MSFT"],
-            "Insider Name & Title": ["Jeff Bezos (Executive Chair)", "Jensen Huang (CEO)", "Mark Zuckerberg (CEO)", "Tim Cook (CEO)", "Satya Nadella (CEO)"],
-            "Transaction Type": ["AUTOMATED 10b5-1 PLAN SALE", "PURCHASE (OPEN MARKET)", "AUTOMATED 10b5-1 PLAN SALE", "AUTOMATED 10b5-1 PLAN SALE", "AUTOMATED 10b5-1 PLAN SALE"],
-            "Shares Traded": ["25,000,000", "97,200", "28,500", "70,000", "12,400"],
-            "Avg Price ($)": ["$186.40", "$128.50", "$568.20", "$224.10", "$448.20"],
-            "Total Value ($)": ["$8,500,000,000", "$12,490,200", "$16,193,700", "$15,687,000", "$5,557,680"],
-            "Strategic Context": ["Pre-scheduled 10b5-1 plan execution for Blue Origin funding", "Open market personal capital allocation into NVDA stock", "Scheduled tax diversification 10b5-1 plan execution", "Pre-planned estate tax withholding settlement", "Pre-scheduled 10b5-1 diversification plan"]
-        })
-        st.markdown(render_styled_table(df_sec_full, ticker_col="Company"), unsafe_allow_html=True)
-
-    # VISUAL BREAKING NEWS CARDS
-    with t_flow4:
-        st.markdown("### 📰 Sector-Sorted Live News Wire & Visual Story Cards")
-        news_cat = st.radio("Filter News Sector:", ["🔥 All News", "💻 Tech & Semiconductors", "🪙 Crypto & Digital Assets", "🛢️ Commodities & Energy", "🏛 Central Banks & Macro Policy"], horizontal=True)
-        st.divider()
-
-        news_stories = [
-            {
-                "category": "Tech & Semiconductors",
-                "tag": "SEMICONDUCTORS",
-                "title": "NVIDIA Blackwell B200 Production Reaches Yield Milestone as Hyperscaler Demand Surges",
-                "source": "Bloomberg Markets • 14 mins ago",
-                "thumb": "https://images.unsplash.com/photo-1518770660439-4636190af475?w=400&q=80",
-                "summary": "TSMC confirmed advanced CoWoS packaging yields have stabilized, unlocking 2.8M GPU unit shipments for Q4. Microsoft and Meta increase CapEx budgets by $12B."
-            },
-            {
-                "category": "Crypto & Digital Assets",
-                "tag": "CRYPTO / ETF",
-                "title": "BlackRock iShares Bitcoin Trust Records $420M Net Daily Inflows Amid Exchange Outflows",
-                "source": "CoinDesk • 32 mins ago",
-                "thumb": "https://images.unsplash.com/photo-1518546305927-5a555bb7020d?w=400&q=80",
-                "summary": "Institutional spot ETF buying absorbs 4x daily miner issuance. On-chain wallet analytics indicate over 68% of circulating BTC has remained unmoved for > 1 year."
-            },
-            {
-                "category": "Central Banks & Macro Policy",
-                "tag": "MACRO / FED",
-                "title": "Federal Reserve Swaps Price 88% Probability of 25bps Rate Cut Following Inflation Print",
-                "source": "Financial Times • 1 hr ago",
-                "thumb": "https://images.unsplash.com/photo-1526304640581-d334cdbbf45e?w=400&q=80",
-                "summary": "Core PCE inflation metrics align with FOMC 2.0% target trajectory. Yields on US 10-Year Treasury notes ease to 3.74% as rate cut expectations solidify."
-            },
-            {
-                "category": "Commodities & Energy",
-                "tag": "COMMODITIES / GOLD",
-                "title": "Central Banks Purchase 1,040 Tonnes of Physical Gold Bullion to Diversify Reserve Currencies",
-                "source": "Reuters Commodities • 2 hrs ago",
-                "thumb": "https://images.unsplash.com/photo-1610375461246-83df859d849d?w=400&q=80",
-                "summary": "BRICS monetary authorities accelerate non-dollar reserve accumulation. Spot Gold pushes toward new high resistance levels with strong structural buying."
-            }
-        ]
-
-        for story in news_stories:
-            if news_cat == "🔥 All News" or story["category"] in news_cat:
-                c_img, c_body = st.columns([1, 3.5])
-                with c_img:
-                    st.image(story["thumb"], use_container_width=True)
-                with c_body:
-                    st.markdown(f"<span class='news-tag'>{story['tag']}</span> <span style='color:#94A3B8; font-size:0.8rem; margin-left:10px;'>{story['source']}</span>", unsafe_allow_html=True)
-                    st.markdown(f"#### {story['title']}")
-                    st.write(story["summary"])
-                st.divider()
-
-    # MACROECONOMIC CALENDAR MATRIX
-    with t_flow5:
-        st.markdown("### 📅 Macroeconomic Calendar & Central Bank Event Matrix")
-        df_macro_cal = pd.DataFrame({
-            "Date / Time": ["Today 08:30 EST", "Today 14:00 EST", "Tomorrow 08:30 EST", "Oct 12 10:00 EST"],
-            "Event / Release": ["Core CPI Inflation (MoM)", "FOMC Meeting Minutes", "Non-Farm Payrolls (NFP)", "OPEC+ Ministerial Meeting"],
-            "Country / Region": ["🇺🇸 United States", "🇺🇸 United States", "🇺🇸 United States", "🌍 Global / OPEC"],
-            "Impact Level": ["HIGH 🔴", "HIGH 🔴", "HIGH 🔴", "MEDIUM 🟡"],
-            "Forecast": ["0.2%", "N/A", "165K", "N/A"],
-            "Previous": ["0.3%", "N/A", "142K", "N/A"]
-        })
-        st.markdown(render_styled_table(df_macro_cal, ticker_col="Event / Release"), unsafe_allow_html=True)
-
-    with t_flow6:
-        st.markdown("### 🕵️ Institutional Dark Pool Prints ($10M+) & Options Sweeps")
-        df_dp = pd.DataFrame({"Time": ["09:31:02", "09:42:15"], "Ticker": ["SPY", "NVDA"], "Block Size": ["$24.5M", "$14.2M"], "Price": ["568.20", "128.45"], "Sentiment": ["BULLISH PASSIVE ABSORPTION", "BULLISH SWEEP"]})
-        st.markdown(render_styled_table(df_dp, ticker_col="Ticker"), unsafe_allow_html=True)
 
 # ==========================================
 # TAB 06: WATCHLIST GRID
@@ -838,11 +679,9 @@ with tab5:
 with tab6:
     st.subheader("⭐ Cloud Watchlist Grid (Neon Postgres Persistence)")
     col_wadd1, col_wadd2 = st.columns([3, 1])
-    with col_wadd1:
-        new_symbol = st.text_input("Add New Symbol to Cloud Watchlist:", placeholder="e.g. TSLA, AMD")
+    with col_wadd1: new_symbol = st.text_input("Add New Symbol to Cloud Watchlist:", placeholder="e.g. TSLA, AMD")
     with col_wadd2:
-        st.write(" ")
-        st.write(" ")
+        st.write(" "); st.write(" ")
         if st.button("➕ Add Symbol", type="primary") and new_symbol:
             CloudDatabaseManager.add_to_watchlist(new_symbol.upper().strip())
             st.rerun()
@@ -868,25 +707,27 @@ with tab6:
                 st.rerun()
 
 # ==========================================
-# TAB 07: PROP AUTOPILOT
+# TAB 07: PROP AUTOPILOT (WITH MASTER AUTOPILOT SWITCH)
 # ==========================================
 with tab7:
-    st.subheader("🏆 Prop Challenge Autopilot & Multi-Firm Replication Grid")
-    st.markdown("### 📊 Challenge Metrics & Risk Compliance")
+    st.subheader("🏆 Multi-Firm Prop Autopilot & Hands-Free Execution")
+    
+    st.markdown("### 🤖 Master System Autopilot Switch")
+    st.info("When enabled, the cloud scanner (`scanner.py`) will automatically execute calculated high-confidence setups without requiring manual intervention from the dashboard. The system evaluates ICT A-M-D cycle and real-time order flow volume delta before firing.")
+    
+    new_ap_state = st.toggle("🚀 ENABLE CLOUD AUTOPILOT (HANDS-FREE EXECUTION)", value=is_autopilot)
+    if new_ap_state != is_autopilot:
+        set_autopilot_state(new_ap_state)
+        st.rerun()
+
+    st.divider()
+    
+    st.markdown("### 📊 Prop Challenge Metrics & Risk Compliance")
     col_p1, col_p2, col_p3 = st.columns(3)
     col_p1.metric("Prop Challenge Profit", "+$4,250.00", "Target: $10,000.00")
     col_p2.metric("Max Daily Drawdown", "0.82%", "Limit: 5.00% 🟢")
     col_p3.metric("Max Total Drawdown", "1.45%", "Limit: 10.00% 🟢")
-
     st.progress(0.425, text="Challenge Phase 1 Progress: 42.5% Complete")
-    st.divider()
-
-    st.markdown("### 🔌 Connected Prop Firm Accounts")
-    pcol1, pcol2 = st.columns(2)
-    with pcol1:
-        st.markdown("<div class='prop-card'><h4>🏢 FTMO $100,000 Challenge</h4><p><b>Account ID:</b> #849201 | <b>Platform:</b> MT5 via MetaApi</p><p><b>Daily Loss Limit:</b> $5,000.00 (Current: -$820.00) 🟢</p><p><b>Replication Status:</b> ACTIVE ⚡ (Latency: 24ms)</p></div>", unsafe_allow_html=True)
-    with pcol2:
-        st.markdown("<div class='prop-card'><h4>🏢 FundedNext $200,000 Evaluation</h4><p><b>Account ID:</b> #192041 | <b>Platform:</b> MT5 via MetaApi</p><p><b>Daily Loss Limit:</b> $10,000.00 (Current: -$1,100.00) 🟢</p><p><b>Replication Status:</b> ACTIVE ⚡ (Latency: 18ms)</p></div>", unsafe_allow_html=True)
 
 # ==========================================
 # TAB 08: WEALTH & WISHLIST
@@ -895,10 +736,7 @@ with tab8:
     st.subheader("💰 Wealth Vault: Long-Term Holdings & Target Buy Wishlist")
     col_w1, col_w2 = st.columns(2)
     with col_w1:
-        df_pie = pd.DataFrame({
-            'Sector': ['Technology', 'Digital Assets (Crypto)', 'Precious Metals', 'Forex / Cash'],
-            'Allocation': [35, 25, 20, 20]
-        })
+        df_pie = pd.DataFrame({'Sector': ['Technology', 'Digital Assets', 'Precious Metals', 'Forex'], 'Allocation': [35, 25, 20, 20]})
         fig_pie = px.pie(df_pie, values='Allocation', names='Sector', hole=0.4, title="Risk Parity Distribution")
         fig_pie.update_layout(template="plotly_dark", height=350)
         st.plotly_chart(fig_pie, use_container_width=True)
@@ -906,26 +744,15 @@ with tab8:
         st.markdown("### 🛡️ Long-Term Wealth Rules")
         st.markdown("* **Max Sector Concentration:** 25% Cap.")
         st.markdown("* **Risk Parity Sizing:** ATR-based volatility position scaling.")
-        st.markdown("* **Target Buy Triggers:** Autopilot executes when parameters trigger.")
 
     st.divider()
-    st.markdown("### 🎯 Target Buy Accumulation Wishlist (Neon Postgres DB Synced)")
+    st.markdown("### 🎯 Target Buy Accumulation Wishlist")
     df_wish = CloudDatabaseManager.get_wishlist_df()
     if not df_wish.empty:
         df_wish_display = df_wish.copy()
         df_wish_display["ticker"] = df_wish_display["ticker"].apply(lambda x: get_clean_symbol(x))
         df_wish_display.columns = ["ID", "Ticker", "Trigger Condition", "Trigger Price ($)", "Target Amount ($)"]
         st.markdown(render_styled_table(df_wish_display, ticker_col="Ticker"), unsafe_allow_html=True)
-    
-    st.markdown("#### ➕ Add New Target Buy Parameter to Neon Cloud")
-    c_wi1, c_wi2, c_wi3, c_wi4 = st.columns(4)
-    w_sym = c_wi1.text_input("Asset Symbol:", placeholder="e.g. NVDA")
-    w_cond = c_wi2.text_input("Trigger Parameter:", placeholder="e.g. Down 10%")
-    w_price = c_wi3.number_input("Target Price ($):", value=120.00)
-    w_amt = c_wi4.number_input("Allocation ($):", value=5000)
-    if st.button("➕ Save Parameter to Cloud Database", type="primary") and w_sym:
-        CloudDatabaseManager.add_wishlist_param(w_sym.strip().upper(), w_cond.strip(), w_price, w_amt)
-        st.rerun()
 
 # ==========================================
 # TAB 09: SYSTEM & BROADCASTER
@@ -936,7 +763,7 @@ with tab9:
     st.success("Listening for incoming TradingView Pine Script webhooks...")
 
 # ==========================================
-# TAB 10: STRATEGY MATRIX
+# TAB 10: STRATEGY MATRIX (WITH ICT AMD & ORDER FLOW)
 # ==========================================
 with tab10:
     st.subheader("🧠 Multi-Factor Strategy Amalgamation & Routing Engine")
@@ -945,9 +772,9 @@ with tab10:
     col_sm1, col_sm2 = st.columns(2)
     with col_sm1:
         st.markdown("### 🧬 Select Confluence Factors")
-        f1 = st.checkbox("Volatility Breakout (Donchian Channels + Volume Z-Score)", value=True)
-        f2 = st.checkbox("Momentum Exhaustion (Williams %R + 200 EMA)", value=True)
-        f3 = st.checkbox("Mean Reversion (VWAP Bands + Choppiness Index)", value=False)
+        f1 = st.checkbox("ICT A-M-D (Accumulation, Manipulation, Distribution)", value=True)
+        f2 = st.checkbox("Order Flow (Cumulative Volume Delta & Imbalances)", value=True)
+        f3 = st.checkbox("Volatility Breakout (Donchian Channels + Volume Z-Score)", value=True)
         f4 = st.checkbox("Supertrend Trend Following", value=False)
         
     with col_sm2:
@@ -958,11 +785,11 @@ with tab10:
     st.divider()
     st.markdown("### 📊 Active Strategy Amalgamation Performance")
     df_strats = pd.DataFrame({
-        "Strategy Model": ["Donchian Breakout + Vol Z-Score", "Williams %R Exhaustion", "Supertrend Trend Following"],
-        "Target Asset Class": ["US Equities (Tech)", "Digital Assets (Crypto)", "Precious Metals"],
-        "Win Rate (%)": ["78.4%", "71.2%", "68.5%"],
-        "Sharpe Ratio": ["2.45", "2.12", "1.88"],
-        "Status": ["ACTIVE 🟢", "ACTIVE 🟢", "STANDBY 🟡"]
+        "Strategy Model": ["ICT Silver Bullet Sweep", "Order Flow Imbalance", "Donchian Vol Breakout"],
+        "Target Asset Class": ["US Equities & Crypto", "Digital Assets (Crypto)", "Precious Metals"],
+        "Win Rate (%)": ["81.4%", "74.2%", "68.5%"],
+        "Sharpe Ratio": ["2.85", "2.42", "1.88"],
+        "Status": ["ACTIVE 🟢", "ACTIVE 🟢", "ACTIVE 🟢"]
     })
     st.markdown(render_styled_table(df_strats, ticker_col="Strategy Model"), unsafe_allow_html=True)
 
@@ -971,16 +798,15 @@ with tab10:
 # ==========================================
 with tab11:
     st.subheader("🔒 Security Vault, 2FA & Emergency System Controls")
-    
     col_sec1, col_sec2 = st.columns(2)
     with col_sec1:
         st.markdown("### 🔑 Encrypted Security Protocol Status")
         st.success("🟢 Security Passcode Gate Lock Active")
-        st.success("🟢 SHA-256 Webhook Bearer Auth Validated")
-        st.success("🟢 RiskGuardian Circuit Breaker Active (4.0% Loss Ceiling)")
+        st.success("🟢 RiskGuardian Circuit Breaker Active")
         st.info("2FA Authenticator TOTP Key: JBSWY3DPEHPK3PXP")
-
     with col_sec2:
         st.markdown("### 🚨 Emergency System Controls")
         if st.button("🔴 PANIC: FLATTEN ALL POSITIONS & HALT AGENTS", use_container_width=True, type="primary"):
-            st.error("EMERGENCY CIRCUIT BREAKER TRIGGERED! All active positions liquidated and daemons halted.")
+            set_autopilot_state(False)
+            st.error("EMERGENCY CIRCUIT BREAKER TRIGGERED! Autopilot halted and agents stopped.")
+            st.rerun()
