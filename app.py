@@ -292,7 +292,7 @@ with tab1:
     components.html(tv_html, height=570)
 
 # ==========================================
-# TAB 02: AI SETUP MATRIX
+# TAB 02: AI SETUP MATRIX (WITH INSTANT ONE-CLICK EXECUTION)
 # ==========================================
 with tab2:
     st.subheader("🎯 Real-Time AI Trade Signals & Confluence Matrix")
@@ -331,10 +331,10 @@ with tab2:
         else:
             st.warning("No setups match your filter criteria.")
             raw_ticker = "NVDA"
-            selected_row = {"Entry": 128.50, "Stop Loss": 125.00, "Target": 139.70, "Pattern": "Donchian Breakout", "Rationale": "Fallback signal."}
+            selected_row = {"Entry": 128.50, "Stop Loss": 125.00, "Target": 139.70, "Pattern": "Donchian Breakout", "Rationale": "Fallback signal.", "Action": "BUY", "Horizon": "15m Scalp"}
     else:
         raw_ticker = "NVDA"
-        selected_row = {"Entry": 128.50, "Stop Loss": 125.00, "Target": 139.70, "Pattern": "Donchian Breakout", "Rationale": "Fallback signal."}
+        selected_row = {"Entry": 128.50, "Stop Loss": 125.00, "Target": 139.70, "Pattern": "Donchian Breakout", "Rationale": "Fallback signal.", "Action": "BUY", "Horizon": "15m Scalp"}
 
     selected_ticker = get_clean_symbol(raw_ticker)
     st.divider()
@@ -382,8 +382,46 @@ with tab2:
     c_l4.markdown(f"<div class='level-card'><span style='color:#818CF8;'>KEY SUPPORT</span><br><b>${supp_val:,.2f}</b></div>", unsafe_allow_html=True)
     c_l5.markdown(f"<div class='level-card'><span style='color:#F59E0B;'>KEY RESISTANCE</span><br><b>${resist_val:,.2f}</b></div>", unsafe_allow_html=True)
 
+    st.divider()
+
+    # --- ONE-CLICK INSTANT TRADE EXECUTION PANEL ---
+    st.markdown(f"### ⚡ One-Click Instant Execution Panel: **{selected_ticker}**")
+    
+    trade_side = str(selected_row.get("Action", "BUY")).upper()
+    trade_horizon = str(selected_row.get("Horizon", "15m Scalp"))
+    pattern_name = str(selected_row.get("Pattern", "Donchian Breakout"))
+    
+    col_ex1, col_ex2, col_ex3 = st.columns([1, 1, 1.5])
+    
+    with col_ex1:
+        trade_qty = st.number_input("Shares / Units Quantity:", min_value=1.0, value=10.0, step=1.0, key="ai_matrix_qty")
+        trade_risk = abs(e_val - sl_val) * trade_qty
+        st.caption(f"Estimated Risk: **${trade_risk:,.2f}**")
+        
+    with col_ex2:
+        st.write(" ")
+        st.write(" ")
+        st.markdown(f"**Side:** `<b style='color:#00E676;'>{trade_side}</b>`", unsafe_allow_html=True)
+        st.markdown(f"**Pattern:** {pattern_name}")
+        
+    with col_ex3:
+        st.write(" ")
+        st.write(" ")
+        exec_btn_label = f"🚀 EXECUTE {trade_side} {trade_qty:.0f} {selected_ticker} @ ${e_val:,.2f}"
+        if st.button(exec_btn_label, type="primary", use_container_width=True, key="ai_matrix_exec_btn"):
+            res = engine.execute_bracket_order(
+                ticker=raw_ticker,
+                qty=trade_qty,
+                side=trade_side,
+                entry=e_val,
+                target=tp_val,
+                stop_loss=sl_val,
+                horizon=trade_horizon
+            )
+            st.success(f"✅ Trade Executed! {res.get('message', 'Bracket order dispatched and logged to Neon Postgres.')}")
+
 # ==========================================
-# TAB 03: PORTFOLIO & EXECUTION (WITH DEMO ACCOUNT DB METRICS)
+# TAB 03: PORTFOLIO & EXECUTION
 # ==========================================
 with tab3:
     st.subheader("⚡ Autonomous Demo Portfolio & Bracket Order Engine")
@@ -604,7 +642,7 @@ with tab5:
     # VISUAL BREAKING NEWS CARDS
     with t_flow4:
         st.markdown("### 📰 Sector-Sorted Live News Wire & Visual Story Cards")
-        news_cat = st.radio("Filter News Sector:", ["🔥 All News", "💻 Tech & Semiconductors", "🪙 Crypto & Digital Assets", "🛢️ Commodities & Energy", "🏛️ Central Banks & Macro Policy"], horizontal=True)
+        news_cat = st.radio("Filter News Sector:", ["🔥 All News", "💻 Tech & Semiconductors", "🪙 Crypto & Digital Assets", "🛢️ Commodities & Energy", "🏛️️ Central Banks & Macro Policy"], horizontal=True)
         st.divider()
 
         news_stories = [
