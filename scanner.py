@@ -19,8 +19,8 @@ jobs:
 
       - name: Install Direct Dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install pandas numpy psycopg2-binary python-dotenv yfinance requests
+          python -m pip install --upgrade pip setuptools wheel
+          pip install pandas numpy psycopg2-binary python-dotenv yfinance requests --no-cache-dir
 
       - name: Execute Cloud Market Scan & Demo Execution
         env:
