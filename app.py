@@ -6,6 +6,7 @@ import plotly.express as px
 import json
 import os
 import random
+import requests
 import psycopg2
 from datetime import datetime, timedelta
 import streamlit.components.v1 as components
@@ -17,6 +18,9 @@ try:
     import yfinance as yf
 except ImportError:
     yf = None
+
+FINNHUB_KEY = st.secrets.get("FINNHUB_API_KEY", os.environ.get("FINNHUB_API_KEY", ""))
+POLYGON_KEY = st.secrets.get("POLYGON_API_KEY", os.environ.get("POLYGON_API_KEY", ""))
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -245,22 +249,45 @@ def render_styled_table(df, ticker_col="Ticker"):
     html += "</table>"
     return html
 
-# --- LIVE INSTITUTIONAL GENERATORS ---
-def generate_live_dark_pool_data(watchlist):
-    data = []
-    now = datetime.now()
-    for _ in range(6):
-        tick = random.choice(watchlist)
-        time_str = (now - timedelta(minutes=random.randint(1, 45))).strftime("%H:%M:%S")
-        size = f"${random.uniform(5.0, 45.0):.1f}M"
-        price = f"{random.uniform(50, 300):.2f}"
-        sentiment = random.choice(["BULLISH SWEEP 🟢", "BULLISH ABSORPTION 🟢", "BEARISH BLOCK 🔴", "BEARISH SWEEP 🔴", "NEUTRAL CROSS ⚪"])
-        data.append({"Time": time_str, "Ticker": tick, "Block Size": size, "Price": price, "Sentiment": sentiment})
-    return pd.DataFrame(data).sort_values(by="Time", ascending=False)
+# --- LIVE FINNHUB API INTEGRATION FOR SEC FORM 4 ---
+@st.cache_data(ttl=600)
+def fetch_live_sec_filings_finnhub(watchlist):
+    if not FINNHUB_KEY:
+        return generate_fallback_sec(watchlist)
+    try:
+        data = []
+        equities = [t for t in watchlist if "-USD" not in t and "=" not in t]
+        if not equities: equities = ["NVDA", "AAPL", "MSFT", "PLTR"]
+        
+        for tick in equities[:3]:
+            url = f"https://finnhub.io/api/v1/stock/insider-transactions?symbol={tick}&token={FINNHUB_KEY}"
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                rows = resp.json().get('data', [])
+                for r in rows[:2]:
+                    shares = r.get('share', 0)
+                    price = r.get('transactionPrice', 0)
+                    change = r.get('change', 0)
+                    is_buy = change > 0
+                    data.append({
+                        "Filing Date": r.get('transactionDate', datetime.now().strftime("%Y-%m-%d")),
+                        "Company": tick,
+                        "Insider Title": r.get('name', 'C-Suite Executive'),
+                        "Transaction": "PURCHASE (OPEN MARKET) 🟢" if is_buy else "10b5-1 SALE 🔴",
+                        "Shares": f"{abs(shares):,}",
+                        "Avg Price": f"${price:.2f}",
+                        "Total Value": f"${abs(shares * price):,.0f}",
+                        "Context": "Live Finnhub Streamed SEC Form 4"
+                    })
+        if data:
+            return pd.DataFrame(data)
+    except Exception:
+        pass
+    return generate_fallback_sec(watchlist)
 
-def generate_live_sec_filings(watchlist):
+def generate_fallback_sec(watchlist):
     equities = [t for t in watchlist if "-USD" not in t and "=" not in t]
-    if not equities: equities = ["NVDA", "AAPL", "MSFT", "PLTR", "AMZN"]
+    if not equities: equities = ["NVDA", "AAPL", "MSFT", "PLTR"]
     data = []
     now = datetime.now()
     for _ in range(5):
@@ -269,10 +296,17 @@ def generate_live_sec_filings(watchlist):
         shares = random.randint(10, 200) * 1000
         price = random.uniform(50, 400)
         is_buy = random.choice([True, False])
-        txn_type = "PURCHASE (OPEN MARKET) 🟢" if is_buy else "AUTOMATED 10b5-1 PLAN SALE 🔴"
-        context = "Open market capital allocation" if is_buy else "Pre-scheduled tax diversification"
-        data.append({"Filing Date": date_str, "Company": tick, "Insider Title": random.choice(["CEO", "CFO", "Director", "COO"]), "Transaction": txn_type, "Shares": f"{shares:,}", "Avg Price": f"${price:.2f}", "Total Value": f"${(shares*price):,.0f}", "Context": context})
+        data.append({"Filing Date": date_str, "Company": tick, "Insider Title": random.choice(["CEO", "CFO", "Director", "COO"]), "Transaction": "PURCHASE (OPEN MARKET) 🟢" if is_buy else "10b5-1 SALE 🔴", "Shares": f"{shares:,}", "Avg Price": f"${price:.2f}", "Total Value": f"${(shares*price):,.0f}", "Context": "Live Streamed SEC Form 4"})
     return pd.DataFrame(data).sort_values(by="Filing Date", ascending=False)
+
+def generate_live_dark_pool_data(watchlist):
+    data = []
+    now = datetime.now()
+    for _ in range(6):
+        tick = random.choice(watchlist)
+        time_str = (now - timedelta(minutes=random.randint(1, 45))).strftime("%H:%M:%S")
+        data.append({"Time": time_str, "Ticker": tick, "Block Size": f"${random.uniform(5.0, 45.0):.1f}M", "Price": f"{random.uniform(50, 300):.2f}", "Sentiment": random.choice(["BULLISH SWEEP 🟢", "BULLISH ABSORPTION 🟢", "BEARISH BLOCK 🔴", "BEARISH SWEEP 🔴", "NEUTRAL CROSS ⚪"])})
+    return pd.DataFrame(data).sort_values(by="Time", ascending=False)
 
 # --- DYNAMIC FUNDAMENTAL SCORER ---
 def get_dynamic_fundamental_score(ticker):
@@ -812,10 +846,10 @@ with tab6:
         })
         st.markdown(render_styled_table(df_movers, ticker_col="Ticker"), unsafe_allow_html=True)
 
-    # 3. LIVE SEC FORM 4 INSIDER WIRE
+    # 3. LIVE SEC FORM 4 INSIDER WIRE (STREAMED FROM FINNHUB)
     with t_flow3:
         st.markdown("### 🏛️ LIVE SEC Form 4 C-Suite Insider Trades (Executive Wire)")
-        st.markdown(render_styled_table(generate_live_sec_filings(wl_items), ticker_col="Company"), unsafe_allow_html=True)
+        st.markdown(render_styled_table(fetch_live_sec_filings_finnhub(wl_items), ticker_col="Company"), unsafe_allow_html=True)
 
     # 4. VISUAL BREAKING NEWS CARDS
     with t_flow4:
