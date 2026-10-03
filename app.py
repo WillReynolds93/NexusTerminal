@@ -80,7 +80,7 @@ def init_all_tables():
                         closed_at TIMESTAMP
                     );
                 """)
-                # System Config Table (For Autopilot & Confidence Scale)
+                # System Config Table
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS system_config (
                         key_name VARCHAR(50) PRIMARY KEY,
@@ -179,7 +179,7 @@ def get_clean_symbol(ticker):
     }
     return map_dict.get(resolved, resolved)
 
-# HIGH-RES SVG LOGO RENDERER WITH AUTOMATIC ERROR FALLBACK
+# HIGH-RES SVG LOGO RENDERER WITH ERROR FALLBACK
 def get_logo_html(ticker, size=24):
     clean = get_clean_symbol(ticker).split(" ")[0].split("-")[0].split("=")[0].upper()
     logo_urls = {
@@ -233,13 +233,19 @@ def render_styled_table(df, ticker_col="Ticker"):
         html += "<tr style='border-bottom:1px solid #1E293B; color:#F3F4F6; font-size:0.9rem;'>"
         for col in df.columns:
             val = str(row[col])
-            if col == ticker_col: html += f"<td style='padding:12px 16px; font-weight:bold;'>{get_logo_html(val, 22)}{get_clean_symbol(val)}</td>"
-            else: html += f"<td style='padding:12px 16px;'>{val}</td>"
+            if col == ticker_col: 
+                html += f"<td style='padding:12px 16px; font-weight:bold;'>{get_logo_html(val, 22)}{get_clean_symbol(val)}</td>"
+            elif "+" in val and ("$" in val or "%" in val):
+                html += f"<td style='padding:12px 16px; color:#00E676; font-weight:bold;'>{val}</td>"
+            elif "-" in val and ("$" in val or "%" in val):
+                html += f"<td style='padding:12px 16px; color:#EF4444; font-weight:bold;'>{val}</td>"
+            else: 
+                html += f"<td style='padding:12px 16px;'>{val}</td>"
         html += "</tr>"
     html += "</table>"
     return html
 
-# --- LIVE INSTITUTIONAL GENERATORS (DARK POOLS & SEC WIRE) ---
+# --- LIVE INSTITUTIONAL GENERATORS ---
 def generate_live_dark_pool_data(watchlist):
     data = []
     now = datetime.now()
@@ -297,7 +303,7 @@ def get_dynamic_fundamental_score(ticker):
             moat_rating = "Wide Monopoly Moat" if health_score >= 85 else "Narrow Moat"
             summary_txt = str(info.get("longBusinessSummary", f"Comprehensive quantitative profile for {resolved}."))[:350] + "..."
             return {"score": health_score, "recommendation": recommendation, "mcap": mcap_str, "pe": pe_ratio, "margin": margin_str, "fair_value": f"${fair_value:,.2f}", "moat": moat_rating, "summary": summary_txt}
-        else: # Crypto / Commodities
+        else:
             df = t.history(period="1mo")
             if not df.empty:
                 close = float(df['Close'].iloc[-1]); high = float(df['High'].max()); low = float(df['Low'].min())
@@ -358,7 +364,7 @@ wl_items = CloudDatabaseManager.get_watchlist()
 if not wl_items: wl_items = ["NVDA", "BTC-USD", "GC=F", "SPY"]
 is_autopilot, min_conf_threshold = get_autopilot_config_ui()
 
-# --- DYNAMIC M2M CALCULATIONS ---
+# --- DYNAMIC M2M CALCULATIONS & ACTIVE POSITIONS LIVE PRICE ENRICHMENT ---
 conn = get_db_conn()
 positions_df = pd.DataFrame()
 if conn:
@@ -373,16 +379,37 @@ closed_trades = positions_df[positions_df['status'] == 'CLOSED'] if not position
 realized_pnl = closed_trades['pnl'].sum() if not closed_trades.empty and 'pnl' in closed_trades.columns else 0.0
 unrealized_pnl, allocated_margin = 0.0, 0.0
 
+# ENRICH ACTIVE TRADES WITH LIVE PRICE, P&L ($), AND RETURN (%)
+enriched_open_trades = pd.DataFrame()
 if not open_trades.empty:
+    open_rows = []
     for idx, row in open_trades.iterrows():
         try:
-            qty, entry = float(row['qty']), float(row['entry_price'])
+            r_dict = row.to_dict()
+            tick = str(r_dict['ticker'])
+            qty = float(r_dict['qty'])
+            entry = float(r_dict['entry_price'])
+            act = str(r_dict['action']).upper()
+            
             allocated_margin += (entry * qty)
-            if yf:
-                data = yf.Ticker(str(row['ticker'])).history(period="1d", interval="1m")
+            curr_price = entry
+            
+            if yf is not None:
+                data = yf.Ticker(tick).history(period="1d", interval="1m")
                 if not data.empty:
-                    unrealized_pnl += ((float(data['Close'].iloc[-1]) - entry) * qty if str(row['action']).upper() == "BUY" else (entry - float(data['Close'].iloc[-1])) * qty)
-        except: pass
+                    curr_price = float(data['Close'].iloc[-1])
+            
+            trade_pnl = (curr_price - entry) * qty if act == "BUY" else (entry - curr_price) * qty
+            pnl_pct = ((curr_price - entry) / entry * 100) if act == "BUY" else ((entry - curr_price) / entry * 100)
+            unrealized_pnl += trade_pnl
+            
+            r_dict['Live Price ($)'] = f"${curr_price:,.2f}"
+            r_dict['Unrealized P&L ($)'] = f"+${trade_pnl:,.2f}" if trade_pnl >= 0 else f"-${abs(trade_pnl):,.2f}"
+            r_dict['Return (%)'] = f"{pnl_pct:+.2f}%"
+            open_rows.append(r_dict)
+        except Exception:
+            pass
+    enriched_open_trades = pd.DataFrame(open_rows)
 
 starting_balance = 100000.0
 live_equity = starting_balance + realized_pnl + unrealized_pnl
@@ -455,7 +482,6 @@ with tab1:
     col_cat, col_dd, col_search, col_fav, col_tf = st.columns([1.2, 1.2, 2, 1, 0.8])
     with col_cat: cat_select = st.selectbox("Asset Class:", ["All Assets", "Equities", "Crypto", "Commodities", "Forex"])
     
-    # EXTENSIVE ASSET DICTIONARY (30 Equities, 20 Cryptos, 10 Commodities, 15 Forex)
     asset_dict = {
         "Equities": ["NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "GOOGL", "PLTR", "AMD", "MSTR", "COIN", "SPY", "QQQ", "IWM", "NFLX", "INTC", "DIS", "BA", "JPM", "GS", "V", "MA", "UNH", "JNJ", "XOM", "CVX", "WMT", "COST", "HD", "PG"],
         "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD", "AVAX-USD", "LINK-USD", "ADA-USD", "XRP-USD", "DOT-USD", "NEAR-USD", "SUI-USD", "APT-USD", "SHIB-USD", "LTC-USD", "UNI-USD", "PEPE-USD", "BCH-USD", "TAO-USD", "RENDER-USD", "INJ-USD"],
@@ -467,7 +493,6 @@ with tab1:
     if cat_select == "All Assets": 
         dd_options = ["NVDA", "BTC-USD", "GC=F", "SPY", "QQQ", "AAPL", "TSLA", "AMD", "MSFT", "ETH-USD", "SOL-USD", "DOGE-USD", "EURUSD=X"]
     
-    # Clean display formatter inside selectbox dropdown
     with col_dd: dd_sym = st.selectbox("Asset Select:", dd_options, format_func=lambda x: get_clean_symbol(x))
     with col_search: search_sym = st.text_input("Search Symbol or Asset Name:", placeholder="e.g. Nvidia, Bitcoin, Dogecoin, Tesla, Gold, Euro...")
     with col_fav:
@@ -661,7 +686,7 @@ with tab3:
         st.rerun()
 
 # ==========================================
-# TAB 04: PORTFOLIO & TRADE HISTORY
+# TAB 04: PORTFOLIO & TRADE HISTORY (WITH LIVE PRICE & UNREALIZED PNL)
 # ==========================================
 with tab4:
     st.subheader("⚡ Portfolio Performance & Executed Trade History")
@@ -672,13 +697,16 @@ with tab4:
     pm4.metric("STRATEGY WIN RATE", "Tracking..." if closed_trades.empty else f"{(len(closed_trades[closed_trades['pnl']>0]) / len(closed_trades) * 100):.1f}%")
     st.divider()
 
-    st.markdown("### 🟢 Active Open Demo Positions")
-    if not open_trades.empty:
-        open_display = open_trades.copy()
+    st.markdown("### 🟢 Active Open Demo Positions (Real-Time Live Prices & P&L)")
+    if not enriched_open_trades.empty:
+        open_display = enriched_open_trades.copy()
         open_display['ticker'] = open_display['ticker'].apply(lambda x: get_clean_symbol(x))
-        open_cols = [c for c in ['opened_at', 'ticker', 'action', 'qty', 'entry_price', 'stop_loss', 'take_profit', 'strategy', 'status'] if c in open_display.columns]
+        
+        # DISPLAY LIVE PRICE, UNREALIZED PNL ($), AND RETURN (%)
+        open_cols = [c for c in ['opened_at', 'ticker', 'action', 'qty', 'entry_price', 'Live Price ($)', 'Unrealized P&L ($)', 'Return (%)', 'stop_loss', 'take_profit', 'strategy'] if c in open_display.columns]
         st.markdown(render_styled_table(open_display[open_cols], ticker_col="ticker"), unsafe_allow_html=True)
-    else: st.info("No open trades currently active.")
+    else: 
+        st.info("No open trades currently active. Trigger a live market scan in Tab 02 to generate new trades!")
 
     st.divider()
     st.markdown("### 📜 Executed Trade History & Realized P&L")
