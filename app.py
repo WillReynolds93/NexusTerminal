@@ -80,7 +80,7 @@ def init_all_tables():
                         closed_at TIMESTAMP
                     );
                 """)
-                # System Config Table
+                # System Config Table (For Autopilot & Confidence Scale)
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS system_config (
                         key_name VARCHAR(50) PRIMARY KEY,
@@ -160,37 +160,62 @@ def get_tv_symbol(ticker):
         return f"NASDAQ:{resolved}"
     elif resolved in ["SPY", "IWM"]: return f"AMEX:{resolved}"
     elif "-USD" in resolved: return f"BINANCE:{resolved.replace('-USD', 'USDT')}"
-    elif resolved in ["GC=F", "GOLD"]: return "TVC:GOLD"
-    elif resolved in ["CL=F", "OIL"]: return "NYMEX:CL1!"
+    elif resolved in ["GC=F", "GOLD", "GOLD (GC=F)"]: return "TVC:GOLD"
+    elif resolved in ["CL=F", "OIL", "CRUDE OIL"]: return "NYMEX:CL1!"
     elif "=X" in resolved or "EUR" in resolved or "GBP" in resolved: return f"FX:{resolved.replace('=X', '')}"
     return f"NASDAQ:{resolved}"
 
 def get_clean_symbol(ticker):
     resolved = resolve_asset_ticker(ticker)
     map_dict = {
-        "GC=F": "Gold", "CL=F": "Crude Oil", "SI=F": "Silver", "NG=F": "Natural Gas",
-        "EURUSD=X": "EUR/USD", "GBPUSD=X": "GBP/USD", "USDJPY=X": "USD/JPY", "AUDUSD=X": "AUD/USD"
+        "GC=F": "Gold", "GOLD": "Gold", "CL=F": "Crude Oil", "OIL": "Crude Oil",
+        "SI=F": "Silver", "NG=F": "Natural Gas", "HG=F": "Copper", "PL=F": "Platinum",
+        "PA=F": "Palladium", "ZC=F": "Corn", "ZW=F": "Wheat", "ZS=F": "Soybeans",
+        "EURUSD=X": "EUR/USD", "GBPUSD=X": "GBP/USD", "USDJPY=X": "USD/JPY",
+        "AUDUSD=X": "AUD/USD", "USDCAD=X": "USD/CAD", "USDCHF=X": "USD/CHF",
+        "NZDUSD=X": "NZD/USD", "EURGBP=X": "EUR/GBP", "EURJPY=X": "EUR/JPY",
+        "GBPJPY=X": "GBP/JPY", "AUDJPY=X": "AUD/JPY", "CADJPY=X": "CAD/JPY",
+        "EURAUD=X": "EUR/AUD", "GBPCHF=X": "GBP/CHF", "EURCHF=X": "EUR/CHF"
     }
     return map_dict.get(resolved, resolved)
 
-# FIX FOR BROKEN LOGOS & 500 ERROR BADGES
+# HIGH-RES SVG LOGO RENDERER WITH AUTOMATIC ERROR FALLBACK
 def get_logo_html(ticker, size=24):
-    clean = get_clean_symbol(ticker).split(" ")[0].split("-")[0].split("=")[0]
+    clean = get_clean_symbol(ticker).split(" ")[0].split("-")[0].split("=")[0].upper()
     logo_urls = {
         "NVDA": "https://s3-symbol-logo.tradingview.com/nvidia--big.svg",
+        "AAPL": "https://s3-symbol-logo.tradingview.com/apple--big.svg",
+        "TSLA": "https://s3-symbol-logo.tradingview.com/tesla--big.svg",
+        "MSFT": "https://s3-symbol-logo.tradingview.com/microsoft--big.svg",
+        "AMZN": "https://s3-symbol-logo.tradingview.com/amazon--big.svg",
+        "META": "https://s3-symbol-logo.tradingview.com/meta-platforms--big.svg",
+        "GOOGL": "https://s3-symbol-logo.tradingview.com/alphabet--big.svg",
+        "PLTR": "https://s3-symbol-logo.tradingview.com/palantir-technologies--big.svg",
+        "AMD": "https://s3-symbol-logo.tradingview.com/advanced-micro-devices--big.svg",
+        "MSTR": "https://s3-symbol-logo.tradingview.com/microstrategy--big.svg",
+        "COIN": "https://s3-symbol-logo.tradingview.com/coinbase-global--big.svg",
+        "SPY": "https://s3-symbol-logo.tradingview.com/s-p-500--big.svg",
+        "QQQ": "https://s3-symbol-logo.tradingview.com/invesco--big.svg",
+        "JNJ": "https://s3-symbol-logo.tradingview.com/johnson-and-johnson--big.svg",
+        "XOM": "https://s3-symbol-logo.tradingview.com/exxon-mobil--big.svg",
+        "CVX": "https://s3-symbol-logo.tradingview.com/chevron--big.svg",
+        "WMT": "https://s3-symbol-logo.tradingview.com/walmart--big.svg",
+        "COST": "https://s3-symbol-logo.tradingview.com/costco-wholesale--big.svg",
+        "HD": "https://s3-symbol-logo.tradingview.com/home-depot--big.svg",
+        "PG": "https://s3-symbol-logo.tradingview.com/procter-and-gamble--big.svg",
         "BTC": "https://s3-symbol-logo.tradingview.com/crypto/XTVCBTC--big.svg",
         "ETH": "https://s3-symbol-logo.tradingview.com/crypto/XTVCETH--big.svg",
         "SOL": "https://s3-symbol-logo.tradingview.com/crypto/XTVCSOL--big.svg",
         "DOGE": "https://s3-symbol-logo.tradingview.com/crypto/XTVCDOGE--big.svg",
-        "AAPL": "https://s3-symbol-logo.tradingview.com/apple--big.svg",
-        "TSLA": "https://s3-symbol-logo.tradingview.com/tesla--big.svg",
-        "AMZN": "https://s3-symbol-logo.tradingview.com/amazon--big.svg",
-        "MSFT": "https://s3-symbol-logo.tradingview.com/microsoft--big.svg",
-        "META": "https://s3-symbol-logo.tradingview.com/meta-platforms--big.svg",
-        "PLTR": "https://s3-symbol-logo.tradingview.com/palantir-technologies--big.svg",
-        "AMD": "https://s3-symbol-logo.tradingview.com/advanced-micro-devices--big.svg",
-        "SPY": "https://s3-symbol-logo.tradingview.com/s-p-500--big.svg",
-        "QQQ": "https://s3-symbol-logo.tradingview.com/invesco--big.svg"
+        "GOLD": "https://s3-symbol-logo.tradingview.com/metal/gold--big.svg",
+        "GC": "https://s3-symbol-logo.tradingview.com/metal/gold--big.svg",
+        "OIL": "https://s3-symbol-logo.tradingview.com/crude-oil--big.svg",
+        "CL": "https://s3-symbol-logo.tradingview.com/crude-oil--big.svg",
+        "SILVER": "https://s3-symbol-logo.tradingview.com/metal/silver--big.svg",
+        "SI": "https://s3-symbol-logo.tradingview.com/metal/silver--big.svg",
+        "EURUSD": "https://s3-symbol-logo.tradingview.com/forex/eurusd--big.svg",
+        "GBPUSD": "https://s3-symbol-logo.tradingview.com/forex/gbpusd--big.svg",
+        "USDJPY": "https://s3-symbol-logo.tradingview.com/forex/usdjpy--big.svg"
     }
     
     if clean in logo_urls:
@@ -291,9 +316,7 @@ def trigger_live_market_scan():
     for tick in tickers:
         entry, sl, tp, strat = 100.0, 95.0, 115.0, "ICT Silver Bullet Sweep"
         base_conf = random.randint(80, 88)
-        
-        # MACRO CONFLUENCE BOOST
-        macro_boost = random.randint(4, 8) # Calculates C-Suite + Dark Pool Absorption
+        macro_boost = random.randint(4, 8)
         total_conf = min(99, base_conf + macro_boost)
         
         if yf:
@@ -444,6 +467,7 @@ with tab1:
     if cat_select == "All Assets": 
         dd_options = ["NVDA", "BTC-USD", "GC=F", "SPY", "QQQ", "AAPL", "TSLA", "AMD", "MSFT", "ETH-USD", "SOL-USD", "DOGE-USD", "EURUSD=X"]
     
+    # Clean display formatter inside selectbox dropdown
     with col_dd: dd_sym = st.selectbox("Asset Select:", dd_options, format_func=lambda x: get_clean_symbol(x))
     with col_search: search_sym = st.text_input("Search Symbol or Asset Name:", placeholder="e.g. Nvidia, Bitcoin, Dogecoin, Tesla, Gold, Euro...")
     with col_fav:
@@ -600,7 +624,7 @@ with tab2:
                     except Exception as ex: st.error(f"Execution Error: {ex}")
 
 # ==========================================
-# TAB 03: WEALTH VAULT (MOVED FORWARD)
+# TAB 03: WEALTH VAULT
 # ==========================================
 with tab3:
     st.subheader("💰 Wealth Vault: Long-Term Holdings & Target Buy Wishlist")
@@ -708,7 +732,7 @@ with tab5:
     st.markdown(render_styled_table(df_strats, ticker_col="Strategy Model"), unsafe_allow_html=True)
 
 # ==========================================
-# TAB 06: RESEARCH & MACRO FLOW (DYNAMIC SCORECARD & LIVE FEEDS)
+# TAB 06: RESEARCH & MACRO FLOW
 # ==========================================
 with tab6:
     st.subheader("🐋 Institutional Research: Deep Dive, Dynamic Scorecard & Macro Flow")
