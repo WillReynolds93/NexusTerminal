@@ -36,13 +36,33 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- 30-SECOND FREE LIVE AUTO-REFRESH ---
+# --- LOGIN GATE WITH SESSION PERSISTENCE ---
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = (st.query_params.get("auth") == "true")
+
+if not st.session_state.authenticated:
+    st.markdown("<br><br><br><h1 style='text-align: center; font-family: Orbitron; font-size: 3rem; background: linear-gradient(135deg, #00E676 0%, #38BDF8 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;'>NEXUS QUANT</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #94A3B8; font-size: 1.1rem; letter-spacing: 2px;'>INSTITUTIONAL ALGORITHMIC TERMINAL</p>", unsafe_allow_html=True)
+    st.write("")
+    c1, c2, c3 = st.columns([1, 1.2, 1])
+    with c2:
+        passcode_input = st.text_input("Security Passcode:", type="password", placeholder="••••••••")
+        if st.button("🔓 UNLOCK TERMINAL", use_container_width=True, type="primary"):
+            if passcode_input == "nexus123":
+                st.session_state.authenticated = True
+                st.query_params["auth"] = "true"
+                st.rerun()
+            else:
+                st.error("Invalid Security Passcode")
+    st.stop()
+
+# --- 30-SECOND AUTO-REFRESH (ONLY EXECUTES WHEN LOGGED IN) ---
 components.html("""
     <script>
         setTimeout(function() {
             window.parent.postMessage({type: 'streamlit:render'}, '*');
             window.parent.location.reload();
-        }, 30000); // 30,000 ms = 30 seconds auto-refresh
+        }, 30000); // 30 seconds
     </script>
 """, height=0)
 
@@ -400,18 +420,6 @@ def get_dynamic_fundamental_score(ticker):
             else: return {"score": 85, "recommendation": "BUY 🟢", "mcap": "N/A", "pe": "N/A", "margin": "N/A", "fair_value": "N/A", "moat": "Network Effect Moat", "summary": f"Live market profile for {resolved}."}
     except Exception: return {"score": 82, "recommendation": "BUY 🟢", "mcap": "N/A", "pe": "N/A", "margin": "N/A", "fair_value": "N/A", "moat": "Institutional Moat", "summary": f"Live analytical summary generated for {resolved}."}
 
-# --- LOGIN GATE ---
-if "authenticated" not in st.session_state: st.session_state.authenticated = False
-if not st.session_state.authenticated:
-    st.markdown("<br><br><br><h1 style='text-align: center; font-family: Orbitron; font-size: 3rem; background: linear-gradient(135deg, #00E676 0%, #38BDF8 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;'>NEXUS QUANT</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #94A3B8; font-size: 1.1rem; letter-spacing: 2px;'>INSTITUTIONAL ALGORITHMIC TERMINAL</p>", unsafe_allow_html=True)
-    st.write("")
-    c1, c2, c3 = st.columns([1, 1.2, 1])
-    with c2:
-        if st.button("🔓 UNLOCK TERMINAL", use_container_width=True, type="primary") if st.text_input("Security Passcode:", type="password", placeholder="••••••••") == "nexus123" else False:
-            st.session_state.authenticated = True; st.rerun()
-    st.stop()
-
 # --- INITIALIZE ENGINES & CONFIG ---
 engine = BrokerExecutionEngine()
 health = engine.check_account_health()
@@ -460,7 +468,6 @@ if not open_trades.empty:
             pnl_pct = ((curr_price - entry) / entry * 100) if act == "BUY" else ((entry - curr_price) / entry * 100)
             unrealized_pnl += trade_pnl
             
-            # Market Regime Status Badge
             if "-USD" in tick or "BTC" in tick or "ETH" in tick:
                 r_dict['Market Status'] = "🟢 LIVE 24/7"
             else:
@@ -495,12 +502,19 @@ st.markdown("""
 col_head1, col_head2 = st.columns([2, 1])
 with col_head1: st.markdown("<div class='brand-title'>NEXUS QUANT TERMINAL</div>", unsafe_allow_html=True)
 with col_head2:
-    st.markdown(f"""
-    <div style='text-align: right;'>
-        <span class='status-badge'>AUTOPILOT: <b style='color:{"#00E676" if is_autopilot else "#EF4444"};'>{"ACTIVE 🟢" if is_autopilot else "OFF 🔴"}</b></span>
-        <span class='status-badge' style='margin-left:8px;'>DATABASE: <b style='color:#00E676;'>LIVE 🟢</b></span>
-    </div>
-    """, unsafe_allow_html=True)
+    col_stat1, col_stat2 = st.columns([3, 1])
+    with col_stat1:
+        st.markdown(f"""
+        <div style='text-align: right;'>
+            <span class='status-badge'>AUTOPILOT: <b style='color:{"#00E676" if is_autopilot else "#EF4444"};'>{"ACTIVE 🟢" if is_autopilot else "OFF 🔴"}</b></span>
+            <span class='status-badge' style='margin-left:8px;'>DATABASE: <b style='color:#00E676;'>LIVE 🟢</b></span>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_stat2:
+        if st.button("🔒 Lock", type="secondary", use_container_width=True):
+            st.session_state.authenticated = False
+            st.query_params.clear()
+            st.rerun()
 
 st.divider()
 
