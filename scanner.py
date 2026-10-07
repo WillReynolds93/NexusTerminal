@@ -11,7 +11,29 @@ from datetime import datetime
 
 FINNHUB_KEY = os.environ.get("FINNHUB_API_KEY", "")
 POLYGON_KEY = os.environ.get("POLYGON_API_KEY", "")
-
+# Ultra-fast live price fetcher (Binance for 24/7 Crypto, Fast Yahoo for Equities)
+@st.cache_data(ttl=2) # 2-second cache
+def get_live_price_fast(ticker):
+    tick_u = str(ticker).upper()
+    # Crypto: Direct Binance Public API (Zero rate limits, sub-second live ticks)
+    if any(c in tick_u for c in ["-USD", "BTC", "ETH", "SOL", "DOGE"]):
+        symbol = tick_u.replace("-USD", "").replace("USDT", "") + "USDT"
+        try:
+            r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=1)
+            if r.status_code == 200:
+                return float(r.json()['price'])
+        except Exception:
+            pass
+    # Equities & Commodities
+    if yf:
+        try:
+            t = yf.Ticker(tick_u)
+            fast_p = getattr(t, 'fast_info', None)
+            if fast_p and hasattr(fast_p, 'last_price') and fast_p.last_price:
+                return float(fast_p.last_price)
+        except Exception:
+            pass
+    return None
 # --- DATABASE CONNECTION ---
 def get_db_connection():
     db_url = os.environ.get("DATABASE_URL", "")
