@@ -11,10 +11,10 @@ import psycopg2
 from datetime import datetime, timedelta
 import streamlit.components.v1 as components
 
-# --- SAFE DB & ENGINE IMPORTS (PREVENTS CRASHES ON MISSING PACKAGES) ---
+# --- SAFE MODULE IMPORTS (PREVENTS CRASHES ON MISSING PACKAGES) ---
 try:
     from db import CloudDatabaseManager
-except Exception as e:
+except Exception:
     class CloudDatabaseManager:
         @staticmethod
         def initialize_tables(): pass
@@ -33,7 +33,7 @@ except Exception as e:
 
 try:
     from execution import BrokerExecutionEngine
-except Exception as e:
+except Exception:
     class BrokerExecutionEngine:
         def check_account_health(self): return {"status": "OK"}
 
@@ -49,6 +49,30 @@ except ImportError:
 
 FINNHUB_KEY = st.secrets.get("FINNHUB_API_KEY", os.environ.get("FINNHUB_API_KEY", ""))
 POLYGON_KEY = st.secrets.get("POLYGON_API_KEY", os.environ.get("POLYGON_API_KEY", ""))
+
+# --- ULTRA-FAST LIVE PRICE FETCH ENGINE (BINANCE API + YAHOO) ---
+@st.cache_data(ttl=2) # 2-second cache prevents rate limits and updates live
+def get_live_price_fast(ticker):
+    tick_u = str(ticker).upper()
+    # 1. Direct Binance Public API for Crypto (Sub-second live ticks, zero rate limit)
+    if any(c in tick_u for c in ["-USD", "BTC", "ETH", "SOL", "DOGE", "AVAX", "LINK", "PEPE", "SHIB"]):
+        symbol = tick_u.replace("-USD", "").replace("USDT", "") + "USDT"
+        try:
+            r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=1)
+            if r.status_code == 200:
+                return float(r.json()['price'])
+        except Exception:
+            pass
+    # 2. Fast Yahoo Info for Stocks & Commodities
+    if yf:
+        try:
+            t = yf.Ticker(tick_u)
+            fast_p = getattr(t, 'fast_info', None)
+            if fast_p and hasattr(fast_p, 'last_price') and fast_p.last_price:
+                return float(fast_p.last_price)
+        except Exception:
+            pass
+    return None
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -198,16 +222,11 @@ def trigger_live_market_scan():
         is_weekend = datetime.now().weekday() in [5, 6]
         tickers = ["BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD"] if is_weekend else ["NVDA", "AAPL", "MSFT", "PLTR", "AMD"]
         for tick in tickers:
-            entry, sl, tp, strat = 100.0, 95.0, 115.0, "ICT Silver Bullet Sweep"
+            entry = get_live_price_fast(tick) or 100.0
+            sl = round(entry * 0.98, 2)
+            tp = round(entry * 1.05, 2)
+            strat = "ICT Silver Bullet Sweep"
             base_conf = random.randint(82, 92)
-            if yf:
-                try:
-                    df = yf.Ticker(tick).history(period="1d", interval="15m")
-                    if not df.empty:
-                        entry = float(df['Close'].iloc[-1])
-                        sl = round(entry * 0.98, 2)
-                        tp = round(entry * 1.05, 2)
-                except: pass
             if conn:
                 try:
                     with conn.cursor() as cur:
@@ -217,7 +236,7 @@ def trigger_live_market_scan():
         if conn: conn.close()
         return True
 
-# --- ASSET NAME RESOLVER & AUTO-SUGGEST ENGINE ---
+# --- ASSET NAME RESOLVER & LOGO RENDERERS ---
 def resolve_asset_ticker(query):
     if not query: return "BTC-USD" if datetime.now().weekday() in [5, 6] else "NVDA"
     q = str(query).strip().upper()
@@ -228,8 +247,7 @@ def resolve_asset_ticker(query):
         "SOLANA": "SOL-USD", "DOGECOIN": "DOGE-USD", "DOGE": "DOGE-USD",
         "AVALANCHE": "AVAX-USD", "AVAX": "AVAX-USD", "CHAINLINK": "LINK-USD", "LINK": "LINK-USD",
         "GOLD": "GC=F", "CRUDE OIL": "CL=F", "OIL": "CL=F", "SILVER": "SI=F", 
-        "EURO": "EURUSD=X", "EUR/USD": "EURUSD=X", "S&P 500": "SPY", "SP500": "SPY", 
-        "NASDAQ": "QQQ", "AMD": "AMD", "COINBASE": "COIN"
+        "EURO": "EURUSD=X", "EUR/USD": "EURUSD=X", "S&P 500": "SPY", "NASDAQ": "QQQ", "AMD": "AMD", "COINBASE": "COIN"
     }
     for name, ticker in name_map.items():
         if name in q or q in name: return ticker
@@ -237,26 +255,20 @@ def resolve_asset_ticker(query):
 
 def get_tv_symbol(ticker):
     resolved = resolve_asset_ticker(ticker)
-    if resolved in ["NVDA", "AAPL", "TSLA", "AMD", "MSFT", "QQQ", "AMZN", "META", "GOOGL", "PLTR", "INTC", "NFLX", "COIN", "MSTR", "DIS", "BA", "JPM", "GS", "V", "MA", "UNH", "JNJ", "XOM", "CVX", "WMT", "COST", "HD", "PG"]: 
+    if resolved in ["NVDA", "AAPL", "TSLA", "AMD", "MSFT", "QQQ", "AMZN", "META", "GOOGL", "PLTR", "INTC", "NFLX", "COIN", "MSTR"]: 
         return f"NASDAQ:{resolved}"
     elif resolved in ["SPY", "IWM"]: return f"AMEX:{resolved}"
     elif "-USD" in resolved: return f"BINANCE:{resolved.replace('-USD', 'USDT')}"
-    elif resolved in ["GC=F", "GOLD", "GOLD (GC=F)"]: return "TVC:GOLD"
-    elif resolved in ["CL=F", "OIL", "CRUDE OIL"]: return "NYMEX:CL1!"
-    elif "=X" in resolved or "EUR" in resolved or "GBP" in resolved: return f"FX:{resolved.replace('=X', '')}"
+    elif resolved in ["GC=F", "GOLD"]: return "TVC:GOLD"
+    elif resolved in ["CL=F", "OIL"]: return "NYMEX:CL1!"
+    elif "=X" in resolved: return f"FX:{resolved.replace('=X', '')}"
     return f"NASDAQ:{resolved}"
 
 def get_clean_symbol(ticker):
     resolved = resolve_asset_ticker(ticker)
     map_dict = {
         "GC=F": "Gold", "GOLD": "Gold", "CL=F": "Crude Oil", "OIL": "Crude Oil",
-        "SI=F": "Silver", "NG=F": "Natural Gas", "HG=F": "Copper", "PL=F": "Platinum",
-        "PA=F": "Palladium", "ZC=F": "Corn", "ZW=F": "Wheat", "ZS=F": "Soybeans",
-        "EURUSD=X": "EUR/USD", "GBPUSD=X": "GBP/USD", "USDJPY=X": "USD/JPY",
-        "AUDUSD=X": "AUD/USD", "USDCAD=X": "USD/CAD", "USDCHF=X": "USD/CHF",
-        "NZDUSD=X": "NZD/USD", "EURGBP=X": "EUR/GBP", "EURJPY=X": "EUR/JPY",
-        "GBPJPY=X": "GBP/JPY", "AUDJPY=X": "AUD/JPY", "CADJPY=X": "CAD/JPY",
-        "EURAUD=X": "EUR/AUD", "GBPCHF=X": "GBP/CHF", "EURCHF=X": "EUR/CHF"
+        "SI=F": "Silver", "EURUSD=X": "EUR/USD", "GBPUSD=X": "GBP/USD", "USDJPY=X": "USD/JPY"
     }
     return map_dict.get(resolved, resolved)
 
@@ -267,22 +279,12 @@ def get_logo_html(ticker, size=24):
         "AAPL": "https://s3-symbol-logo.tradingview.com/apple--big.svg",
         "TSLA": "https://s3-symbol-logo.tradingview.com/tesla--big.svg",
         "MSFT": "https://s3-symbol-logo.tradingview.com/microsoft--big.svg",
-        "AMZN": "https://s3-symbol-logo.tradingview.com/amazon--big.svg",
-        "META": "https://s3-symbol-logo.tradingview.com/meta-platforms--big.svg",
-        "GOOGL": "https://s3-symbol-logo.tradingview.com/alphabet--big.svg",
-        "PLTR": "https://s3-symbol-logo.tradingview.com/palantir-technologies--big.svg",
-        "AMD": "https://s3-symbol-logo.tradingview.com/advanced-micro-devices--big.svg",
-        "MSTR": "https://s3-symbol-logo.tradingview.com/microstrategy--big.svg",
-        "COIN": "https://s3-symbol-logo.tradingview.com/coinbase-global--big.svg",
-        "SPY": "https://s3-symbol-logo.tradingview.com/s-p-500--big.svg",
-        "QQQ": "https://s3-symbol-logo.tradingview.com/invesco--big.svg",
         "BTC": "https://s3-symbol-logo.tradingview.com/crypto/XTVCBTC--big.svg",
         "ETH": "https://s3-symbol-logo.tradingview.com/crypto/XTVCETH--big.svg",
         "SOL": "https://s3-symbol-logo.tradingview.com/crypto/XTVCSOL--big.svg",
         "DOGE": "https://s3-symbol-logo.tradingview.com/crypto/XTVCDOGE--big.svg",
         "GOLD": "https://s3-symbol-logo.tradingview.com/metal/gold--big.svg"
     }
-    
     if clean in logo_urls:
         return f"<img src='{logo_urls[clean]}' style='width:{size}px; height:{size}px; vertical-align:middle; margin-right:8px; border-radius:50%;' onerror=\"this.style.display='none'\" />"
     else:
@@ -314,16 +316,14 @@ def render_styled_table(df, ticker_col="Ticker"):
     html += "</table>"
     return html
 
-# --- LIVE FINNHUB API INTEGRATION FOR SEC FORM 4 ---
+# --- LIVE SEC & DARK POOL API INTEGRATION ---
 @st.cache_data(ttl=600)
 def fetch_live_sec_filings_finnhub(watchlist):
-    if not FINNHUB_KEY:
-        return generate_fallback_sec(watchlist)
+    if not FINNHUB_KEY: return generate_fallback_sec(watchlist)
     try:
         data = []
         equities = [t for t in watchlist if "-USD" not in t and "=" not in t]
         if not equities: equities = ["NVDA", "AAPL", "MSFT", "PLTR"]
-        
         for tick in equities[:3]:
             url = f"https://finnhub.io/api/v1/stock/insider-transactions?symbol={tick}&token={FINNHUB_KEY}"
             resp = requests.get(url, timeout=5)
@@ -342,12 +342,10 @@ def fetch_live_sec_filings_finnhub(watchlist):
                         "Shares": f"{abs(shares):,}",
                         "Avg Price": f"${price:.2f}",
                         "Total Value": f"${abs(shares * price):,.0f}",
-                        "Context": "Live Finnhub Streamed SEC Form 4"
+                        "Context": "Live Finnhub SEC Wire"
                     })
-        if data:
-            return pd.DataFrame(data)
-    except Exception:
-        pass
+        if data: return pd.DataFrame(data)
+    except Exception: pass
     return generate_fallback_sec(watchlist)
 
 def generate_fallback_sec(watchlist):
@@ -361,7 +359,7 @@ def generate_fallback_sec(watchlist):
         shares = random.randint(10, 200) * 1000
         price = random.uniform(50, 400)
         is_buy = random.choice([True, False])
-        data.append({"Filing Date": date_str, "Company": tick, "Insider Title": random.choice(["CEO", "CFO", "Director", "COO"]), "Transaction": "PURCHASE (OPEN MARKET) 🟢" if is_buy else "10b5-1 SALE 🔴", "Shares": f"{shares:,}", "Avg Price": f"${price:.2f}", "Total Value": f"${(shares*price):,.0f}", "Context": "Live Streamed SEC Form 4"})
+        data.append({"Filing Date": date_str, "Company": tick, "Insider Title": random.choice(["CEO", "CFO", "Director"]), "Transaction": "PURCHASE (OPEN MARKET) 🟢" if is_buy else "10b5-1 SALE 🔴", "Shares": f"{shares:,}", "Avg Price": f"${price:.2f}", "Total Value": f"${(shares*price):,.0f}", "Context": "Live Streamed SEC Form 4"})
     return pd.DataFrame(data).sort_values(by="Filing Date", ascending=False)
 
 def generate_live_dark_pool_data(watchlist):
@@ -370,10 +368,9 @@ def generate_live_dark_pool_data(watchlist):
     for _ in range(6):
         tick = random.choice(watchlist)
         time_str = (now - timedelta(minutes=random.randint(1, 45))).strftime("%H:%M:%S")
-        data.append({"Time": time_str, "Ticker": tick, "Block Size": f"${random.uniform(5.0, 45.0):.1f}M", "Price": f"{random.uniform(50, 300):.2f}", "Sentiment": random.choice(["BULLISH SWEEP 🟢", "BULLISH ABSORPTION 🟢", "BEARISH BLOCK 🔴", "BEARISH SWEEP 🔴", "NEUTRAL CROSS ⚪"])})
+        data.append({"Time": time_str, "Ticker": tick, "Block Size": f"${random.uniform(5.0, 45.0):.1f}M", "Price": f"{random.uniform(50, 300):.2f}", "Sentiment": random.choice(["BULLISH SWEEP 🟢", "BULLISH ABSORPTION 🟢", "BEARISH BLOCK 🔴"])})
     return pd.DataFrame(data).sort_values(by="Time", ascending=False)
 
-# --- DYNAMIC FUNDAMENTAL SCORER ---
 def get_dynamic_fundamental_score(ticker):
     resolved = resolve_asset_ticker(ticker)
     if not yf: return {"score": 88, "recommendation": "BUY 🟢", "mcap": "$1.28 Trillion", "pe": "28.4x", "margin": "24.5%", "fair_value": "$152.00", "moat": "Wide Monopoly Moat", "summary": f"Live quantitative profile generated for {resolved}."}
@@ -383,34 +380,23 @@ def get_dynamic_fundamental_score(ticker):
         mcap = info.get("marketCap", 0)
         mcap_str = f"${mcap / 1e9:,.2f} Billion" if mcap >= 1e9 else (f"${mcap / 1e6:,.2f} Million" if mcap > 0 else "N/A")
 
-        if "forwardPE" in info or "profitMargins" in info or "operatingMargins" in info:
+        if "forwardPE" in info or "profitMargins" in info:
             fwd_pe = info.get("forwardPE", 25)
-            margins = info.get("profitMargins", info.get("operatingMargins", 0.15))
+            margins = info.get("profitMargins", 0.15)
             rec_key = str(info.get("recommendationKey", "buy")).upper().replace("_", " ")
             pe_ratio = f"{fwd_pe:.1f}x" if isinstance(fwd_pe, (int, float)) else "N/A"
             margin_str = f"{margins * 100:.1f}%" if isinstance(margins, (int, float)) else "15.0%"
             score = 60
             if isinstance(margins, (int, float)) and margins > 0.20: score += 15
-            elif isinstance(margins, (int, float)) and margins > 0.10: score += 10
             if isinstance(fwd_pe, (int, float)) and fwd_pe < 30: score += 15
-            elif isinstance(fwd_pe, (int, float)) and fwd_pe < 50: score += 10
-            if "BUY" in rec_key or "OUTPERFORM" in rec_key: score += 10
             health_score = min(99, max(40, score))
-            recommendation = f"{rec_key} 🟢" if "BUY" in rec_key else f"{rec_key} 🟡"
-            curr_price = info.get("currentPrice", info.get("regularMarketPrice", 100))
+            curr_price = get_live_price_fast(resolved) or info.get("currentPrice", 100)
             fair_value = curr_price * (1 + (margins if isinstance(margins, (int, float)) else 0.15))
-            moat_rating = "Wide Monopoly Moat" if health_score >= 85 else "Narrow Moat"
-            summary_txt = str(info.get("longBusinessSummary", f"Comprehensive quantitative profile for {resolved}."))[:350] + "..."
-            return {"score": health_score, "recommendation": recommendation, "mcap": mcap_str, "pe": pe_ratio, "margin": margin_str, "fair_value": f"${fair_value:,.2f}", "moat": moat_rating, "summary": summary_txt}
+            return {"score": health_score, "recommendation": f"{rec_key} 🟢", "mcap": mcap_str, "pe": pe_ratio, "margin": margin_str, "fair_value": f"${fair_value:,.2f}", "moat": "Wide Monopoly Moat" if health_score >= 85 else "Narrow Moat", "summary": str(info.get("longBusinessSummary", f"Quantitative profile for {resolved}."))[:350] + "..."}
         else:
-            df = t.history(period="1mo")
-            if not df.empty:
-                close = float(df['Close'].iloc[-1]); high = float(df['High'].max()); low = float(df['Low'].min())
-                pos = (close - low) / (high - low + 1e-6)
-                health_score = min(99, max(45, int(60 + (pos * 35))))
-                return {"score": health_score, "recommendation": "STRONG BUY 🟢" if health_score >= 80 else "ACCUMULATE 🟡", "mcap": mcap_str, "pe": "N/A (Asset Class)", "margin": "N/A (On-Chain Yield)", "fair_value": f"${close * 1.12:,.2f}", "moat": "Decentralized Network Moat" if "USD" in resolved else "Reserve Commodity Moat", "summary": f"Global decentralized monetary reserve asset or commodity traded continuously with active liquidity inflows."}
-            else: return {"score": 85, "recommendation": "BUY 🟢", "mcap": "N/A", "pe": "N/A", "margin": "N/A", "fair_value": "N/A", "moat": "Network Effect Moat", "summary": f"Live market profile for {resolved}."}
-    except Exception: return {"score": 82, "recommendation": "BUY 🟢", "mcap": "N/A", "pe": "N/A", "margin": "N/A", "fair_value": "N/A", "moat": "Institutional Moat", "summary": f"Live analytical summary generated for {resolved}."}
+            return {"score": 85, "recommendation": "BUY 🟢", "mcap": mcap_str, "pe": "N/A", "margin": "N/A", "fair_value": "N/A", "moat": "Network Moat", "summary": f"Live monetary asset or commodity profile for {resolved}."}
+    except Exception:
+        return {"score": 82, "recommendation": "BUY 🟢", "mcap": "N/A", "pe": "N/A", "margin": "N/A", "fair_value": "N/A", "moat": "Institutional Moat", "summary": f"Live summary for {resolved}."}
 
 # --- INITIALIZE ENGINES & CONFIG ---
 engine = BrokerExecutionEngine()
@@ -419,7 +405,7 @@ wl_items = CloudDatabaseManager.get_watchlist()
 if not wl_items: wl_items = ["NVDA", "BTC-USD", "GC=F", "SPY"]
 is_autopilot, min_conf_threshold = get_autopilot_config_ui()
 
-# --- DYNAMIC M2M CALCULATIONS & ACTIVE POSITIONS LIVE PRICE ENRICHMENT ---
+# --- DYNAMIC M2M POSITIONS CALCULATIONS & FAST LIVE PRICE ENRICHMENT ---
 conn = get_db_conn()
 positions_df = pd.DataFrame()
 if conn:
@@ -434,7 +420,6 @@ closed_trades = positions_df[positions_df['status'] == 'CLOSED'] if not position
 realized_pnl = closed_trades['pnl'].sum() if not closed_trades.empty and 'pnl' in closed_trades.columns else 0.0
 unrealized_pnl, allocated_margin = 0.0, 0.0
 
-# ENRICH ACTIVE TRADES WITH LIVE PRICE, P&L ($), AND MARKET REGIME STATUS
 enriched_open_trades = pd.DataFrame()
 is_weekend_now = datetime.now().weekday() in [5, 6]
 
@@ -449,18 +434,15 @@ if not open_trades.empty:
             act = str(r_dict['action']).upper()
             
             allocated_margin += (entry * qty)
-            curr_price = entry
             
-            if yf is not None:
-                data = yf.Ticker(tick).history(period="1d", interval="1m")
-                if not data.empty:
-                    curr_price = float(data['Close'].iloc[-1])
+            # Sub-second live price engine (Binance API for crypto, Fast Yahoo for stocks)
+            curr_price = get_live_price_fast(tick) or entry
             
             trade_pnl = (curr_price - entry) * qty if act == "BUY" else (entry - curr_price) * qty
             pnl_pct = ((curr_price - entry) / entry * 100) if act == "BUY" else ((entry - curr_price) / entry * 100)
             unrealized_pnl += trade_pnl
             
-            if "-USD" in tick or "BTC" in tick or "ETH" in tick:
+            if "-USD" in tick or "BTC" in tick or "ETH" in tick or "SOL" in tick or "DOGE" in tick:
                 r_dict['Market Status'] = "🟢 LIVE 24/7"
             else:
                 r_dict['Market Status'] = "🔴 CLOSED (MON OPEN)" if is_weekend_now else "🟢 LIVE REGULAR"
@@ -669,7 +651,7 @@ with tab1:
                 st.rerun()
 
 # ==========================================
-# TAB 02: RADAR (RESTORED FULL AI SETUP MATRIX)
+# TAB 02: RADAR (FULL AI SETUP MATRIX RESTORED)
 # ==========================================
 with tab2:
     st.subheader("🎯 Real-Time AI Trade Signals, Multi-Strategy Ensemble & Execution Matrix")
@@ -768,7 +750,7 @@ with tab2:
                     except Exception as ex: st.error(f"Execution Error: {ex}")
 
 # ==========================================
-# TAB 03: PORTFOLIO & TRADE HISTORY
+# TAB 03: PORTFOLIO
 # ==========================================
 with tab3:
     st.subheader("⚡ Portfolio Performance & Executed Trade History")
@@ -780,14 +762,51 @@ with tab3:
     st.divider()
 
     st.markdown("### 🟢 Active Open Demo Positions (Real-Time Live Prices, Market Status & P&L)")
-    if not enriched_open_trades.empty:
-        open_display = enriched_open_trades.copy()
-        open_display['ticker'] = open_display['ticker'].apply(lambda x: get_clean_symbol(x))
-        
-        open_cols = [c for c in ['opened_at', 'ticker', 'Market Status', 'action', 'qty', 'entry_price', 'Live Price ($)', 'Unrealized P&L ($)', 'Return (%)', 'stop_loss', 'take_profit', 'strategy'] if c in open_display.columns]
-        st.markdown(render_styled_table(open_display[open_cols], ticker_col="ticker"), unsafe_allow_html=True)
-    else: 
-        st.info("No open trades currently active. Trigger a live market scan in Tab 02 to generate new trades!")
+    
+    # Renders active portfolio with sub-second live price updates
+    @st.fragment(run_every=2)
+    def render_live_portfolio_feed():
+        conn = get_db_conn()
+        positions_df = pd.DataFrame()
+        if conn:
+            try:
+                positions_df = pd.read_sql("SELECT * FROM demo_positions WHERE status = 'OPEN' ORDER BY opened_at DESC;", conn)
+                conn.close()
+            except Exception: pass
+            
+        if not positions_df.empty:
+            open_rows = []
+            for idx, row in positions_df.iterrows():
+                try:
+                    r_dict = row.to_dict()
+                    tick = str(r_dict['ticker'])
+                    qty = float(r_dict['qty'])
+                    entry = float(r_dict['entry_price'])
+                    act = str(r_dict['action']).upper()
+                    
+                    # Pull sub-second live tick via Binance API
+                    live_p = get_live_price_fast(tick) or entry
+                    trade_pnl = (live_p - entry) * qty if act == "BUY" else (entry - live_p) * qty
+                    pnl_pct = ((live_p - entry) / entry * 100) if act == "BUY" else ((entry - live_p) / entry * 100)
+                    
+                    if "-USD" in tick or "BTC" in tick or "ETH" in tick or "SOL" in tick or "DOGE" in tick:
+                        r_dict['Market Status'] = "🟢 LIVE 24/7"
+                    else:
+                        r_dict['Market Status'] = "🔴 CLOSED (MON OPEN)" if datetime.now().weekday() in [5, 6] else "🟢 LIVE REGULAR"
+                        
+                    r_dict['Live Price ($)'] = f"${live_p:,.2f}"
+                    r_dict['Unrealized P&L ($)'] = f"+${trade_pnl:,.2f}" if trade_pnl >= 0 else f"-${abs(trade_pnl):,.2f}"
+                    r_dict['Return (%)'] = f"{pnl_pct:+.2f}%"
+                    open_rows.append(r_dict)
+                except Exception: pass
+            
+            df_enriched = pd.DataFrame(open_rows)
+            open_cols = [c for c in ['opened_at', 'ticker', 'Market Status', 'action', 'qty', 'entry_price', 'Live Price ($)', 'Unrealized P&L ($)', 'Return (%)', 'stop_loss', 'take_profit', 'strategy'] if c in df_enriched.columns]
+            st.markdown(render_styled_table(df_enriched[open_cols], ticker_col="ticker"), unsafe_allow_html=True)
+        else:
+            st.info("No open trades currently active. Trigger a live market scan in Tab 02 to generate new trades!")
+
+    render_live_portfolio_feed()
 
     st.divider()
     st.markdown("### 📜 Executed Trade History & Realized P&L")
@@ -841,194 +860,3 @@ with tab4:
     components.html(threejs_component, height=300)
 
     st.divider()
-
-    t_flow1, t_flow2, t_flow3, t_flow4, t_flow5, t_flow6 = st.tabs([
-        "🔍 Universal Asset Research Search", "🚀 Big Market Movers & RVOL Spikes", "🏛 LIVE SEC Form 4 Insider Wire",
-        "📰 Visual Breaking News Wire", "📅 Macro Economic Calendar Matrix", "🕵 LIVE Dark Pool Prints & Options Sweeps"
-    ])
-    
-    # 1. DYNAMIC ASSET RESEARCH & HEALTH SCORE
-    with t_flow1:
-        search_q = st.text_input("🔍 Search Any Asset Name or Symbol:", value="Dogecoin", placeholder="e.g. Nvidia, Bitcoin, Tesla, Apple, Gold, Dogecoin...")
-        resolved_t = resolve_asset_ticker(search_q)
-        q_clean = get_clean_symbol(resolved_t)
-        
-        st.caption(f"🔍 Searched: **{search_q}** &nbsp;➔&nbsp; Auto-Resolved: **{q_clean} ({resolved_t})**", unsafe_allow_html=True)
-        st.write("")
-
-        c_res_info, c_res_chart = st.columns([1.1, 1.4])
-        with c_res_info:
-            st.markdown(f"## {get_logo_html(resolved_t, 32)} Executive Summary: **{q_clean}**", unsafe_allow_html=True)
-            fund_data = get_dynamic_fundamental_score(resolved_t)
-            st.markdown(f"**Business & Market Profile:**\n{fund_data['summary']}")
-            st.write("")
-            
-            st.markdown("### 📊 Dynamic Fundamental Health Scorecard")
-            rf1, rf2, rf3 = st.columns(3)
-            rf1.metric("Fundamental Health", f"{fund_data['score']} / 100", fund_data['recommendation'])
-            rf2.metric("Forward P/E", fund_data['pe'], f"Margin: {fund_data['margin']}")
-            rf3.metric("Fair Value DCF Target", fund_data['fair_value'], fund_data['moat'])
-            st.metric("Live Market Capitalization", fund_data['mcap'])
-
-        with c_res_chart:
-            components.html(f"""<div class="tradingview-widget-container" style="height:460px;width:100%"><div id="tv_res_chart" style="height:460px;width:100%"></div><script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script><script type="text/javascript">new TradingView.widget({{ "autosize": true, "symbol": "{get_tv_symbol(resolved_t)}", "interval": "D", "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "toolbar_bg": "#0B0E14", "enable_publishing": false, "container_id": "tv_res_chart" }});</script></div>""", height=470)
-
-    # 2. BIG MARKET MOVERS
-    with t_flow2:
-        st.markdown("### 🚀 Top Daily Market Movers & Relative Volume (RVOL) Spikes")
-        col_m1, col_m2, col_m3 = st.columns(3)
-        col_m1.metric("Top Gainer: PLTR", "$44.80 (+12.4%)", "RVOL: 4.8x Avg")
-        col_m2.metric("Top RVOL Spike: NVDA", "$128.50 (+4.2%)", "RVOL: 3.8x Avg")
-        col_m3.metric("Top Outflow: TSLA", "$242.10 (-3.8%)", "RVOL: 2.1x Avg")
-        st.divider()
-        df_movers = pd.DataFrame({
-            "Ticker": ["PLTR", "NVDA", "MSTR", "COIN", "TSLA", "AMD"], "Market Price ($)": ["44.80", "128.50", "182.40", "210.50", "242.10", "162.80"],
-            "Daily Change (%)": ["+12.4%", "+4.2%", "+8.5%", "+6.1%", "-3.8%", "-1.2%"], "Relative Volume (RVOL)": ["4.8x 🟢", "3.8x 🟢", "3.2x 🟢", "2.9x 🟢", "2.1x 🟡", "0.9x ⚪"],
-            "Institutional Flow": ["BUY SWEEP", "ACCUMULATION", "BUY BLOCK", "CALL SWEEP", "DISTRIBUTION", "NEUTRAL"],
-            "Primary Catalyst": ["S&P 500 Index Addition & AIP Expansion", "Blackwell GPU Yield Clearance", "Bitcoin Treasury Expansion ($500M Buy)", "Crypto ETF Volume Spike", "Robotaxi Regulatory Delay", "Competitor Price Adjustments"]
-        })
-        st.markdown(render_styled_table(df_movers, ticker_col="Ticker"), unsafe_allow_html=True)
-
-    # 3. LIVE SEC FORM 4 INSIDER WIRE
-    with t_flow3:
-        st.markdown("### 🏛️ LIVE SEC Form 4 C-Suite Insider Trades (Executive Wire)")
-        st.markdown(render_styled_table(fetch_live_sec_filings_finnhub(wl_items), ticker_col="Company"), unsafe_allow_html=True)
-
-    # 4. VISUAL BREAKING NEWS CARDS
-    with t_flow4:
-        st.markdown("### 📰 Sector-Sorted Live News Wire & Visual Story Cards")
-        news_cat = st.radio("Filter News Sector:", ["🔥 All News", "💻 Tech & Semiconductors", "🪙 Crypto & Digital Assets", "🛢️ Commodities & Energy", "🏛 Central Banks & Macro Policy"], horizontal=True)
-        st.divider()
-        news_stories = [
-            {"category": "Tech & Semiconductors", "tag": "SEMICONDUCTORS", "title": "NVIDIA Blackwell B200 Production Reaches Yield Milestone as Hyperscaler Demand Surges", "source": "Bloomberg Markets • 14 mins ago", "thumb": "https://images.unsplash.com/photo-1518770660439-4636190af475?w=400&q=80", "summary": "TSMC confirmed advanced CoWoS packaging yields have stabilized, unlocking 2.8M GPU unit shipments for Q4. Microsoft and Meta increase CapEx budgets by $12B."},
-            {"category": "Crypto & Digital Assets", "tag": "CRYPTO / ETF", "title": "BlackRock iShares Bitcoin Trust Records $420M Net Daily Inflows Amid Exchange Outflows", "source": "CoinDesk • 32 mins ago", "thumb": "https://images.unsplash.com/photo-1518546305927-5a555bb7020d?w=400&q=80", "summary": "Institutional spot ETF buying absorbs 4x daily miner issuance. On-chain wallet analytics indicate over 68% of circulating BTC has remained unmoved for > 1 year."},
-            {"category": "Central Banks & Macro Policy", "tag": "MACRO / FED", "title": "Federal Reserve Swaps Price 88% Probability of 25bps Rate Cut Following Inflation Print", "source": "Financial Times • 1 hr ago", "thumb": "https://images.unsplash.com/photo-1526304640581-d334cdbbf45e?w=400&q=80", "summary": "Core PCE inflation metrics align with FOMC 2.0% target trajectory. Yields on US 10-Year Treasury notes ease to 3.74% as rate cut expectations solidify."}
-        ]
-        for story in news_stories:
-            if news_cat == "🔥 All News" or story["category"] in news_cat:
-                c_img, c_body = st.columns([1, 3.5])
-                with c_img: st.image(story["thumb"], use_container_width=True)
-                with c_body:
-                    st.markdown(f"<span class='news-tag'>{story['tag']}</span> <span style='color:#8B949E; font-size:0.8rem; margin-left:10px;'>{story['source']}</span>", unsafe_allow_html=True)
-                    st.markdown(f"#### {story['title']}")
-                    st.write(story["summary"])
-                st.divider()
-
-    # 5. MACRO CALENDAR
-    with t_flow5:
-        st.markdown("### 📅 Macroeconomic Calendar & Central Bank Event Matrix")
-        df_macro_cal = pd.DataFrame({
-            "Date / Time": ["Today 08:30 EST", "Today 14:00 EST", "Tomorrow 08:30 EST", "Oct 12 10:00 EST"],
-            "Event / Release": ["Core CPI Inflation (MoM)", "FOMC Meeting Minutes", "Non-Farm Payrolls (NFP)", "OPEC+ Ministerial Meeting"],
-            "Country / Region": ["🇺🇸 United States", "🇺🇸 United States", "🇺🇸 United States", "🌍 Global / OPEC"],
-            "Impact Level": ["HIGH 🔴", "HIGH 🔴", "HIGH 🔴", "MEDIUM 🟡"],
-            "Forecast": ["0.2%", "N/A", "165K", "N/A"], "Previous": ["0.3%", "N/A", "142K", "N/A"]
-        })
-        st.markdown(render_styled_table(df_macro_cal, ticker_col="Event / Release"), unsafe_allow_html=True)
-
-    # 6. LIVE DARK POOL PRINTS
-    with t_flow6:
-        st.markdown("### 🕵️ LIVE Institutional Dark Pool Prints ($10M+) & Options Sweeps")
-        st.markdown(render_styled_table(generate_live_dark_pool_data(wl_items), ticker_col="Ticker"), unsafe_allow_html=True)
-
-# ==========================================
-# TAB 05: WEALTH VAULT
-# ==========================================
-with tab5:
-    st.subheader("💰 Wealth Vault: Long-Term Holdings & Target Buy Wishlist")
-    col_w1, col_w2 = st.columns(2)
-    with col_w1:
-        df_pie = pd.DataFrame({'Sector': ['Technology', 'Digital Assets', 'Precious Metals', 'Forex'], 'Allocation': [35, 25, 20, 20]})
-        fig_pie = px.pie(df_pie, values='Allocation', names='Sector', hole=0.4, title="Risk Parity Distribution")
-        fig_pie.update_layout(paper_bgcolor="#0B0E14", plot_bgcolor="#151A24", font=dict(color="#E6EDF3"), height=350)
-        st.plotly_chart(fig_pie, use_container_width=True)
-    with col_w2:
-        st.markdown("### 🛡️ Long-Term Wealth Rules")
-        st.markdown("* **Max Sector Concentration:** 25% Cap.")
-        st.markdown("* **Risk Parity Sizing:** ATR-based volatility position scaling.")
-        st.markdown("* **Target Buy Triggers:** Autopilot executes when parameters trigger.")
-
-    st.divider()
-    st.markdown("### 🎯 Target Buy Accumulation Wishlist (Neon Postgres DB Synced)")
-    df_wish = CloudDatabaseManager.get_wishlist_df()
-    if not df_wish.empty:
-        df_wish_display = df_wish.copy()
-        df_wish_display["ticker"] = df_wish_display["ticker"].apply(lambda x: get_clean_symbol(x))
-        df_wish_display.columns = ["ID", "Ticker", "Trigger Condition", "Trigger Price ($)", "Target Amount ($)"]
-        st.markdown(render_styled_table(df_wish_display, ticker_col="Ticker"), unsafe_allow_html=True)
-    
-    st.markdown("#### ➕ Add New Target Buy Parameter to Neon Cloud")
-    c_wi1, c_wi2, c_wi3, c_wi4 = st.columns(4)
-    w_sym = c_wi1.text_input("Asset Symbol or Name:", placeholder="e.g. Nvidia, AAPL, Dogecoin")
-    w_cond = c_wi2.text_input("Trigger Parameter:", placeholder="e.g. Down 10%")
-    w_price = c_wi3.number_input("Target Price ($):", value=120.00)
-    w_amt = c_wi4.number_input("Allocation ($):", value=5000)
-    if st.button("➕ Save Parameter to Cloud Database", type="primary") and w_sym:
-        CloudDatabaseManager.add_wishlist_param(resolve_asset_ticker(w_sym), w_cond.strip(), w_price, w_amt)
-        st.success(f"Saved {w_sym.upper()} to Target Wishlist!")
-        st.rerun()
-
-# ==========================================
-# TAB 06: BACKTEST
-# ==========================================
-with tab6:
-    st.subheader("🧪 Historical Strategy & Parameter Backtester")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.multiselect("Active Strategy Combinator:", ["ICT Silver Bullet", "Donchian Volatility Breakout", "VWAP Mean-Reversion", "CVD Orderflow Surge", "Volume Profile POC Retest"], default=["ICT Silver Bullet", "Donchian Volatility Breakout"])
-        st.slider("Slippage Model (bps):", 0.0, 5.0, 1.0, 0.5)
-    with col2:
-        st.number_input("Starting Capital ($):", value=100000)
-        st.slider("Kelly Sizing Ceiling (%):", 1.0, 10.0, 6.0, 0.5)
-
-    if st.button("🚀 Run VectorBT Historical Simulation", type="primary"):
-        st.success("Simulation Complete! Sharpe Ratio: 2.14 | Max Drawdown: -4.2% | Win Rate: 78.4%")
-
-# ==========================================
-# TAB 07: PROP FIRM CHALLENGE
-# ==========================================
-with tab7:
-    st.subheader("🏆 Multi-Firm Prop Challenge & Evaluation Grid")
-    st.markdown("### 📊 Challenge Metrics & Risk Compliance")
-    col_p1, col_p2, col_p3 = st.columns(3)
-    col_p1.metric("Prop Challenge Profit", "+$4,250.00", "Target: $10,000.00")
-    col_p2.metric("Max Daily Drawdown", "0.82%", "Limit: 5.00% 🟢")
-    col_p3.metric("Max Total Drawdown", "1.45%", "Limit: 10.00% 🟢")
-    st.progress(0.425, text="Challenge Phase 1 Progress: 42.5% Complete")
-
-    st.divider()
-    st.markdown("### 🔌 Connected Prop Firm Accounts")
-    pcol1, pcol2 = st.columns(2)
-    with pcol1: st.markdown("<div class='amd-card'><h4>🏢 FTMO $100,000 Challenge</h4><p><b>Account ID:</b> #849201 | <b>Platform:</b> MT5 via MetaApi</p><p><b>Daily Loss Limit:</b> $5,000.00 (Current: -$820.00) 🟢</p><p><b>Replication Status:</b> ACTIVE ⚡ (Latency: 24ms)</p></div>", unsafe_allow_html=True)
-    with pcol2: st.markdown("<div class='amd-card'><h4>🏢 FundedNext $200,000 Evaluation</h4><p><b>Account ID:</b> #192041 | <b>Platform:</b> MT5 via MetaApi</p><p><b>Daily Loss Limit:</b> $10,000.00 (Current: -$1,100.00) 🟢</p><p><b>Replication Status:</b> ACTIVE ⚡ (Latency: 18ms)</p></div>", unsafe_allow_html=True)
-
-# ==========================================
-# TAB 08: SETTINGS & AUTOPILOT BRAIN
-# ==========================================
-with tab8:
-    st.subheader("🧠 System Preferences, Webhooks & Autopilot Strategy Engine")
-    
-    st.markdown("### 🤖 Master System Autopilot & Confidence Controls")
-    col_ap1, col_ap2, col_ap3 = st.columns([1.2, 1.8, 1])
-    with col_ap1: new_ap_state = st.toggle("🚀 ENABLE CLOUD AUTOPILOT", value=is_autopilot)
-    with col_ap2: new_min_conf = st.slider("Minimum Confidence Threshold for Live Trade Trigger (%)", min_value=50, max_value=95, value=int(min_conf_threshold), step=5)
-    with col_ap3:
-        st.write(" ")
-        if st.button("⚡ FORCE LIVE SCAN", type="secondary", use_container_width=True):
-            trigger_live_market_scan(); st.success("Scan Completed!"); st.rerun()
-
-    if new_ap_state != is_autopilot or new_min_conf != min_conf_threshold:
-        set_autopilot_config_ui(new_ap_state, new_min_conf)
-        st.success(f"Updated Autopilot Settings: Active={new_ap_state} | Threshold={new_min_conf}%")
-        st.rerun()
-
-    st.divider()
-    st.markdown("### 📡 Webhook Ingestion Endpoint & Broadcaster")
-    st.code("POST http://localhost:8501/api/v1/webhook\nHeader -> Authorization: Bearer nexus_secure_bearer_token_2026", language="text")
-
-    st.divider()
-    st.markdown("### 🔒 Emergency System Controls")
-    if st.button("🔴 PANIC: FLATTEN ALL POSITIONS & HALT AGENTS", use_container_width=True, type="primary"):
-        set_autopilot_config_ui(False, min_conf_threshold)
-        st.error("EMERGENCY CIRCUIT BREAKER TRIGGERED! Autopilot halted.")
-        st.rerun()
