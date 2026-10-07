@@ -152,15 +152,12 @@ def evaluate_multi_strategy_ensemble(conn, ticker, df):
     s5_hit, s5_score, s5_msg = strat_05_cross_asset_relative_strength(ticker, df)
     if s5_hit: triggered_strats.append((s5_score, "Cross-Asset RS Alpha", s5_msg))
     
-    # If no strategy triggered, exit early
     if not triggered_strats:
         return False, 0, "No Strategy Model Triggered", ""
         
-    # Sort triggered strategies by highest base score
     triggered_strats.sort(key=lambda x: x[0], reverse=True)
     primary_score, primary_name, primary_msg = triggered_strats[0]
     
-    # Confluence stacking boost if multiple strategies trigger simultaneously
     multi_strat_boost = (len(triggered_strats) - 1) * 5
     inst_boost, inst_reasons = evaluate_options_and_sec_flow(ticker)
     
@@ -216,7 +213,6 @@ def scan_markets():
     conn = get_db_connection()
     config = get_autopilot_config(conn)
     
-    # Monitor open trades
     monitor_open_positions(conn)
 
     is_weekend = datetime.now().weekday() in [5, 6]
@@ -238,7 +234,6 @@ def scan_markets():
             
             close = float(df['Close'].iloc[-1])
             
-            # EVALUATE MULTI-STRATEGY ENSEMBLE
             valid_setup, win_prob, rationale, primary_strategy = evaluate_multi_strategy_ensemble(conn, ticker, df)
             
             if valid_setup:
@@ -282,5 +277,12 @@ def process_execution(conn, config, ticker, action, entry, sl, tp, win_prob, str
     except Exception as e:
         print(f"[EXECUTION ERROR] {e}")
 
+# --- CONTINUOUS 24/7 BACKGROUND DAEMON LOOP ---
 if __name__ == "__main__":
-    scan_markets()
+    print("⚡ [NEXUS QUANT] Starting 24/7 Continuous Background Market Scanner...")
+    while True:
+        try:
+            scan_markets()
+        except Exception as main_e:
+            print(f"[DAEMON ERROR] {main_e}")
+        time.sleep(60) # Re-scans every 60 seconds
