@@ -1,862 +1,309 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
-import plotly.express as px
-import json
 import os
+import sys
+import time
 import random
 import requests
 import psycopg2
-from datetime import datetime, timedelta
-import streamlit.components.v1 as components
+import pandas as pd
+import numpy as np
+import yfinance as yf
+from datetime import datetime
 
-# --- SAFE MODULE IMPORTS (PREVENTS CRASHES ON MISSING PACKAGES) ---
-try:
-    from db import CloudDatabaseManager
-except Exception:
-    class CloudDatabaseManager:
-        @staticmethod
-        def initialize_tables(): pass
-        @staticmethod
-        def get_watchlist(): return ["NVDA", "BTC-USD", "GC=F", "SPY"]
-        @staticmethod
-        def add_to_watchlist(symbol): pass
-        @staticmethod
-        def remove_from_watchlist(symbol): pass
-        @staticmethod
-        def get_setups_df(): return pd.DataFrame()
-        @staticmethod
-        def get_wishlist_df(): return pd.DataFrame()
-        @staticmethod
-        def add_wishlist_param(ticker, cond, price, amt): pass
+FINNHUB_KEY = os.environ.get("FINNHUB_API_KEY", "")
+POLYGON_KEY = os.environ.get("POLYGON_API_KEY", "")
 
-try:
-    from execution import BrokerExecutionEngine
-except Exception:
-    class BrokerExecutionEngine:
-        def check_account_health(self): return {"status": "OK"}
-
-try:
-    import yfinance as yf
-except ImportError:
-    yf = None
-
-try:
-    import scanner
-except ImportError:
-    scanner = None
-
-FINNHUB_KEY = st.secrets.get("FINNHUB_API_KEY", os.environ.get("FINNHUB_API_KEY", ""))
-POLYGON_KEY = st.secrets.get("POLYGON_API_KEY", os.environ.get("POLYGON_API_KEY", ""))
-
-# --- ULTRA-FAST LIVE PRICE FETCH ENGINE (BINANCE API + YAHOO) ---
-@st.cache_data(ttl=2) # 2-second cache prevents rate limits and updates live
-def get_live_price_fast(ticker):
+# --- ULTRA-FAST PRICE FETCH ENGINE (BINANCE + YAHOO FALLBACK) ---
+def get_live_price_fast_scanner(ticker):
     tick_u = str(ticker).upper()
-    # 1. Direct Binance Public API for Crypto (Sub-second live ticks, zero rate limit)
+    # Direct Binance Public API for Crypto (instant ticks, zero rate limits)
     if any(c in tick_u for c in ["-USD", "BTC", "ETH", "SOL", "DOGE", "AVAX", "LINK", "PEPE", "SHIB"]):
         symbol = tick_u.replace("-USD", "").replace("USDT", "") + "USDT"
         try:
-            r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=1)
+            r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=2)
             if r.status_code == 200:
                 return float(r.json()['price'])
         except Exception:
             pass
-    # 2. Fast Yahoo Info for Stocks & Commodities
+    # Yahoo fast info for stocks & commodities
     if yf:
         try:
             t = yf.Ticker(tick_u)
             fast_p = getattr(t, 'fast_info', None)
             if fast_p and hasattr(fast_p, 'last_price') and fast_p.last_price:
                 return float(fast_p.last_price)
+            df = t.history(period="1d", interval="5m")
+            if not df.empty:
+                return float(df['Close'].iloc[-1])
         except Exception:
             pass
     return None
 
-# --- PAGE CONFIGURATION ---
-st.set_page_config(
-    page_title="NEXUS QUANT | Institutional Terminal",
-    page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
-
-# --- LOGIN GATE WITH SESSION PERSISTENCE ---
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = (st.query_params.get("auth") == "true")
-
-if not st.session_state.authenticated:
-    st.markdown("<br><br><br><h1 style='text-align: center; font-family: Orbitron; font-size: 3rem; background: linear-gradient(135deg, #00FFB2 0%, #38BDF8 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;'>NEXUS QUANT</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #8B949E; font-size: 1.1rem; letter-spacing: 2px;'>INSTITUTIONAL ALGORITHMIC TERMINAL</p>", unsafe_allow_html=True)
-    st.write("")
-    c1, c2, c3 = st.columns([1, 1.2, 1])
-    with c2:
-        passcode_input = st.text_input("Security Passcode:", type="password", placeholder="••••••••")
-        if st.button("🔓 UNLOCK TERMINAL", use_container_width=True, type="primary"):
-            if passcode_input == "nexus123":
-                st.session_state.authenticated = True
-                st.query_params["auth"] = "true"
-                st.rerun()
-            else:
-                st.error("Invalid Security Passcode")
-    st.stop()
-
-# --- DATABASE CONNECTION & AUTOMATIC TABLE INITIALIZER ---
-def get_db_conn():
-    db_url = st.secrets.get("DATABASE_URL", os.environ.get("DATABASE_URL", ""))
-    if db_url:
-        if "channel_binding=" in db_url:
-            db_url = db_url.replace("&channel_binding=require", "").replace("?channel_binding=require", "")
-        try:
-            return psycopg2.connect(db_url)
-        except Exception:
-            return None
-    return None
-
-def init_all_tables():
-    conn = get_db_conn()
-    if conn:
-        try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS signals (
-                        id SERIAL PRIMARY KEY,
-                        horizon VARCHAR(20),
-                        ticker VARCHAR(20),
-                        pattern VARCHAR(100),
-                        confidence INT,
-                        win_prob INT,
-                        risk_reward VARCHAR(20),
-                        entry DOUBLE PRECISION,
-                        stop_loss DOUBLE PRECISION,
-                        target DOUBLE PRECISION,
-                        action VARCHAR(10),
-                        rationale TEXT,
-                        strategy VARCHAR(50) DEFAULT 'Donchian Breakout',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    );
-                """)
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS demo_positions (
-                        id SERIAL PRIMARY KEY,
-                        ticker VARCHAR(20),
-                        action VARCHAR(10),
-                        qty DOUBLE PRECISION,
-                        entry_price DOUBLE PRECISION,
-                        stop_loss DOUBLE PRECISION,
-                        take_profit DOUBLE PRECISION,
-                        status VARCHAR(20) DEFAULT 'OPEN',
-                        exit_price DOUBLE PRECISION,
-                        pnl DOUBLE PRECISION,
-                        strategy VARCHAR(50) DEFAULT 'Donchian Breakout',
-                        opened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        closed_at TIMESTAMP
-                    );
-                """)
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS system_config (
-                        key_name VARCHAR(50) PRIMARY KEY,
-                        key_value VARCHAR(50),
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    );
-                """)
-                cur.execute("""
-                    INSERT INTO system_config (key_name, key_value) 
-                    VALUES ('autopilot_active', 'FALSE') 
-                    ON CONFLICT (key_name) DO NOTHING;
-                """)
-                cur.execute("""
-                    INSERT INTO system_config (key_name, key_value) 
-                    VALUES ('autopilot_min_conf', '80') 
-                    ON CONFLICT (key_name) DO NOTHING;
-                """)
-                conn.commit()
-            conn.close()
-        except Exception:
-            pass
-
-init_all_tables()
-CloudDatabaseManager.initialize_tables()
-
-# --- AUTOPILOT CONFIG MANAGEMENT ---
-def get_autopilot_config_ui():
-    conn = get_db_conn()
-    active, min_conf = False, 80
-    if conn:
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT key_name, key_value FROM system_config WHERE key_name IN ('autopilot_active', 'autopilot_min_conf');")
-                rows = cur.fetchall()
-                for k, v in rows:
-                    if k == 'autopilot_active': active = (v == 'TRUE')
-                    elif k == 'autopilot_min_conf': min_conf = int(v)
-            conn.close()
-        except Exception:
-            if conn: conn.close()
-    return active, min_conf
-
-def set_autopilot_config_ui(active_bool, min_conf_int):
-    conn = get_db_conn()
-    if conn:
-        try:
-            with conn.cursor() as cur:
-                cur.execute("UPDATE system_config SET key_value = %s, updated_at = CURRENT_TIMESTAMP WHERE key_name = 'autopilot_active';", ('TRUE' if active_bool else 'FALSE',))
-                cur.execute("UPDATE system_config SET key_value = %s, updated_at = CURRENT_TIMESTAMP WHERE key_name = 'autopilot_min_conf';", (str(min_conf_int),))
-                conn.commit()
-            conn.close()
-        except Exception:
-            if conn: conn.close()
-
-# --- DIRECT SCANNER ENGINE LINK ---
-def trigger_live_market_scan():
-    if scanner is not None:
-        try:
-            scanner.scan_markets()
-            return True
-        except Exception as e:
-            st.error(f"Scan Execution Error: {e}")
-            return False
-    else:
-        conn = get_db_conn()
-        is_weekend = datetime.now().weekday() in [5, 6]
-        tickers = ["BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD"] if is_weekend else ["NVDA", "AAPL", "MSFT", "PLTR", "AMD"]
-        for tick in tickers:
-            entry = get_live_price_fast(tick) or 100.0
-            sl = round(entry * 0.98, 2)
-            tp = round(entry * 1.05, 2)
-            strat = "ICT Silver Bullet Sweep"
-            base_conf = random.randint(82, 92)
-            if conn:
-                try:
-                    with conn.cursor() as cur:
-                        cur.execute("""INSERT INTO signals (horizon, ticker, pattern, confidence, win_prob, risk_reward, entry, stop_loss, target, action, rationale, strategy) VALUES ('15m Scalp', %s, %s, %s, 85, '1:2.5', %s, %s, %s, 'BUY', 'Live Multi-Strategy Confluence Sweep', %s);""", (tick, strat, base_conf, entry, sl, tp, strat))
-                        conn.commit()
-                except: pass
-        if conn: conn.close()
-        return True
-
-# --- ASSET NAME RESOLVER & LOGO RENDERERS ---
-def resolve_asset_ticker(query):
-    if not query: return "BTC-USD" if datetime.now().weekday() in [5, 6] else "NVDA"
-    q = str(query).strip().upper()
-    name_map = {
-        "NVIDIA": "NVDA", "APPLE": "AAPL", "TESLA": "TSLA", "MICROSOFT": "MSFT",
-        "AMAZON": "AMZN", "META": "META", "FACEBOOK": "META", "PALANTIR": "PLTR",
-        "MICROSTRATEGY": "MSTR", "BITCOIN": "BTC-USD", "ETHEREUM": "ETH-USD",
-        "SOLANA": "SOL-USD", "DOGECOIN": "DOGE-USD", "DOGE": "DOGE-USD",
-        "AVALANCHE": "AVAX-USD", "AVAX": "AVAX-USD", "CHAINLINK": "LINK-USD", "LINK": "LINK-USD",
-        "GOLD": "GC=F", "CRUDE OIL": "CL=F", "OIL": "CL=F", "SILVER": "SI=F", 
-        "EURO": "EURUSD=X", "EUR/USD": "EURUSD=X", "S&P 500": "SPY", "NASDAQ": "QQQ", "AMD": "AMD", "COINBASE": "COIN"
-    }
-    for name, ticker in name_map.items():
-        if name in q or q in name: return ticker
-    return q
-
-def get_tv_symbol(ticker):
-    resolved = resolve_asset_ticker(ticker)
-    if resolved in ["NVDA", "AAPL", "TSLA", "AMD", "MSFT", "QQQ", "AMZN", "META", "GOOGL", "PLTR", "INTC", "NFLX", "COIN", "MSTR"]: 
-        return f"NASDAQ:{resolved}"
-    elif resolved in ["SPY", "IWM"]: return f"AMEX:{resolved}"
-    elif "-USD" in resolved: return f"BINANCE:{resolved.replace('-USD', 'USDT')}"
-    elif resolved in ["GC=F", "GOLD"]: return "TVC:GOLD"
-    elif resolved in ["CL=F", "OIL"]: return "NYMEX:CL1!"
-    elif "=X" in resolved: return f"FX:{resolved.replace('=X', '')}"
-    return f"NASDAQ:{resolved}"
-
-def get_clean_symbol(ticker):
-    resolved = resolve_asset_ticker(ticker)
-    map_dict = {
-        "GC=F": "Gold", "GOLD": "Gold", "CL=F": "Crude Oil", "OIL": "Crude Oil",
-        "SI=F": "Silver", "EURUSD=X": "EUR/USD", "GBPUSD=X": "GBP/USD", "USDJPY=X": "USD/JPY"
-    }
-    return map_dict.get(resolved, resolved)
-
-def get_logo_html(ticker, size=24):
-    clean = get_clean_symbol(ticker).split(" ")[0].split("-")[0].split("=")[0].upper()
-    logo_urls = {
-        "NVDA": "https://s3-symbol-logo.tradingview.com/nvidia--big.svg",
-        "AAPL": "https://s3-symbol-logo.tradingview.com/apple--big.svg",
-        "TSLA": "https://s3-symbol-logo.tradingview.com/tesla--big.svg",
-        "MSFT": "https://s3-symbol-logo.tradingview.com/microsoft--big.svg",
-        "BTC": "https://s3-symbol-logo.tradingview.com/crypto/XTVCBTC--big.svg",
-        "ETH": "https://s3-symbol-logo.tradingview.com/crypto/XTVCETH--big.svg",
-        "SOL": "https://s3-symbol-logo.tradingview.com/crypto/XTVCSOL--big.svg",
-        "DOGE": "https://s3-symbol-logo.tradingview.com/crypto/XTVCDOGE--big.svg",
-        "GOLD": "https://s3-symbol-logo.tradingview.com/metal/gold--big.svg"
-    }
-    if clean in logo_urls:
-        return f"<img src='{logo_urls[clean]}' style='width:{size}px; height:{size}px; vertical-align:middle; margin-right:8px; border-radius:50%;' onerror=\"this.style.display='none'\" />"
-    else:
-        initials = clean[:2].upper()
-        return f"<span style='display:inline-block; width:{size}px; height:{size}px; line-height:{size}px; text-align:center; background:#151A24; color:#00FFB2; font-size:10px; font-weight:bold; border-radius:50%; margin-right:8px; border:1px solid #00FFB2;'>{initials}</span>"
-
-def render_styled_table(df, ticker_col="Ticker"):
-    if df.empty: return "<p style='color:#8B949E;'>No records available.</p>"
-    html = "<table style='width:100%; border-collapse:collapse; background:#151A24; border:1px solid rgba(0, 255, 178, 0.15); border-radius:8px; overflow:hidden; font-family:sans-serif; margin-bottom:15px;'><tr style='background:#121620; color:#8B949E; text-align:left; font-size:0.85rem; border-bottom:1px solid rgba(0, 255, 178, 0.15);'>"
-    for col in df.columns: html += f"<th style='padding:12px 16px;'>{col}</th>"
-    html += "</tr>"
-    for idx, row in df.iterrows():
-        html += "<tr style='border-bottom:1px solid rgba(0, 255, 178, 0.08); color:#E6EDF3; font-size:0.9rem;'>"
-        for col in df.columns:
-            val = str(row[col])
-            if col == ticker_col: 
-                html += f"<td style='padding:12px 16px; font-weight:bold;'>{get_logo_html(val, 22)}{get_clean_symbol(val)}</td>"
-            elif "+" in val and ("$" in val or "%" in val):
-                html += f"<td style='padding:12px 16px; color:#00FFB2; font-weight:bold;'>{val}</td>"
-            elif "-" in val and ("$" in val or "%" in val):
-                html += f"<td style='padding:12px 16px; color:#FF4D4D; font-weight:bold;'>{val}</td>"
-            elif "🟢" in val or "LIVE" in val:
-                html += f"<td style='padding:12px 16px; color:#00FFB2; font-weight:bold;'>{val}</td>"
-            elif "🔴" in val or "CLOSED" in val:
-                html += f"<td style='padding:12px 16px; color:#FF4D4D; font-weight:bold;'>{val}</td>"
-            else: 
-                html += f"<td style='padding:12px 16px;'>{val}</td>"
-        html += "</tr>"
-    html += "</table>"
-    return html
-
-# --- LIVE SEC & DARK POOL API INTEGRATION ---
-@st.cache_data(ttl=600)
-def fetch_live_sec_filings_finnhub(watchlist):
-    if not FINNHUB_KEY: return generate_fallback_sec(watchlist)
+# --- DATABASE CONNECTION ---
+def get_db_connection():
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url: return None
+    if "channel_binding=" in db_url:
+        db_url = db_url.replace("&channel_binding=require", "").replace("?channel_binding=require", "")
     try:
-        data = []
-        equities = [t for t in watchlist if "-USD" not in t and "=" not in t]
-        if not equities: equities = ["NVDA", "AAPL", "MSFT", "PLTR"]
-        for tick in equities[:3]:
-            url = f"https://finnhub.io/api/v1/stock/insider-transactions?symbol={tick}&token={FINNHUB_KEY}"
-            resp = requests.get(url, timeout=5)
+        return psycopg2.connect(db_url)
+    except Exception as e:
+        print(f"[DB ERROR] {e}")
+        return None
+
+def get_autopilot_config(conn):
+    config = {"active": False, "min_conf": 80}
+    if not conn: return config
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT key_name, key_value FROM system_config WHERE key_name IN ('autopilot_active', 'autopilot_min_conf');")
+            for k, v in cur.fetchall():
+                if k == 'autopilot_active': config['active'] = (v == 'TRUE')
+                elif k == 'autopilot_min_conf': config['min_conf'] = int(v)
+    except Exception: pass
+    return config
+
+# =====================================================================
+# INDEPENDENT STRATEGY ENGINES (EVALUATED IN PARALLEL)
+# =====================================================================
+
+def strat_01_ict_liquidity_sweep(df):
+    """STRATEGY 1: ICT Liquidity Stop Run & Reclaim"""
+    if len(df) < 20: return False, 0, ""
+    close = float(df['Close'].iloc[-1])
+    low = float(df['Low'].iloc[-1])
+    recent_low = float(df['Low'].iloc[-20:-1].min())
+    if low <= recent_low and close > recent_low:
+        return True, 82, "ICT Liquidity Sweep (20-Period Low Reclaimed)"
+    return False, 0, ""
+
+def strat_02_donchian_breakout(df):
+    """STRATEGY 2: Donchian Channel Volatility Expansion"""
+    if len(df) < 20: return False, 0, ""
+    close = float(df['Close'].iloc[-1])
+    high_20 = float(df['High'].iloc[-20:-1].max())
+    if close >= high_20:
+        return True, 80, "Donchian Volatility Channel Breakout"
+    return False, 0, ""
+
+def strat_03_mean_reversion_vwap_squeeze(df):
+    """STRATEGY 3: VWAP & Bollinger Oversold Exhaustion Rebound"""
+    if len(df) < 20: return False, 0, ""
+    close = float(df['Close'].iloc[-1])
+    sma20 = df['Close'].rolling(20).mean().iloc[-1]
+    std20 = df['Close'].rolling(20).std().iloc[-1]
+    lower_band = sma20 - (2.0 * std20)
+    
+    # RSI calculation
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / (loss + 1e-6)
+    rsi = 100 - (100 / (1 + rs)).iloc[-1]
+    
+    if close <= lower_band or rsi < 32:
+        return True, int(85 + min(10, (32 - rsi) if rsi < 32 else 5)), f"Mean-Reversion Exhaustion (RSI: {rsi:.1f})"
+    return False, 0, ""
+
+def strat_04_order_flow_cvd_surge(df):
+    """STRATEGY 4: CVD Order Flow & Volume Z-Score Surge"""
+    if len(df) < 20: return False, 0, ""
+    vol = float(df['Volume'].iloc[-1])
+    vol_mean = df['Volume'].rolling(20).mean().iloc[-1]
+    vol_std = df['Volume'].rolling(20).std().iloc[-1]
+    z_score = (vol - vol_mean) / (vol_std + 1e-6)
+    
+    close = float(df['Close'].iloc[-1])
+    open_p = float(df['Open'].iloc[-1])
+    
+    if z_score > 1.8 and close > open_p:
+        return True, min(95, int(78 + z_score * 6)), f"Order Flow CVD Surge (Z-Score: {z_score:.1f}σ)"
+    return False, 0, ""
+
+def strat_05_cross_asset_relative_strength(ticker, df):
+    """STRATEGY 5: Relative Strength Matrix Alpha vs Benchmark"""
+    try:
+        benchmark_sym = "BTC-USD" if ("-USD" in ticker or "BTC" in ticker) else "SPY"
+        bench_df = yf.Ticker(benchmark_sym).history(period="5d", interval="15m")
+        if len(df) >= 10 and len(bench_df) >= 10:
+            asset_ret = (df['Close'].iloc[-1] - df['Close'].iloc[-10]) / df['Close'].iloc[-10]
+            bench_ret = (bench_df['Close'].iloc[-1] - bench_df['Close'].iloc[-10]) / bench_df['Close'].iloc[-10]
+            rs_alpha = (asset_ret - bench_ret) * 100.0
+            if rs_alpha >= 2.0:
+                return True, min(92, int(80 + rs_alpha * 3)), f"Relative Strength Alpha (+{rs_alpha:.2f}% vs {benchmark_sym})"
+    except Exception: pass
+    return False, 0, ""
+
+# =====================================================================
+# AUXILIARY CONFLUENCE METRICS (BOOSTERS)
+# =====================================================================
+def evaluate_options_and_sec_flow(ticker):
+    """Auxiliary institutional flow boost"""
+    boost = 0
+    reasons = []
+    if FINNHUB_KEY and not ("-USD" in ticker or "=X" in ticker):
+        try:
+            clean_t = ticker.replace("NASDAQ:", "").strip()
+            url = f"https://finnhub.io/api/v1/stock/insider-sentiment?symbol={clean_t}&token={FINNHUB_KEY}"
+            resp = requests.get(url, timeout=3)
             if resp.status_code == 200:
-                rows = resp.json().get('data', [])
-                for r in rows[:2]:
-                    shares = r.get('share', 0)
-                    price = r.get('transactionPrice', 0)
-                    change = r.get('change', 0)
-                    is_buy = change > 0
-                    data.append({
-                        "Filing Date": r.get('transactionDate', datetime.now().strftime("%Y-%m-%d")),
-                        "Company": tick,
-                        "Insider Title": r.get('name', 'C-Suite Executive'),
-                        "Transaction": "PURCHASE (OPEN MARKET) 🟢" if is_buy else "10b5-1 SALE 🔴",
-                        "Shares": f"{abs(shares):,}",
-                        "Avg Price": f"${price:.2f}",
-                        "Total Value": f"${abs(shares * price):,.0f}",
-                        "Context": "Live Finnhub SEC Wire"
-                    })
-        if data: return pd.DataFrame(data)
-    except Exception: pass
-    return generate_fallback_sec(watchlist)
+                data = resp.json().get('data', [])
+                if data and data[0].get('mspr', 0) > 0:
+                    boost += 6
+                    reasons.append("SEC Form 4 Net Insider Buying")
+        except Exception: pass
+    return boost, reasons
 
-def generate_fallback_sec(watchlist):
-    equities = [t for t in watchlist if "-USD" not in t and "=" not in t]
-    if not equities: equities = ["NVDA", "AAPL", "MSFT", "PLTR"]
-    data = []
-    now = datetime.now()
-    for _ in range(5):
-        tick = random.choice(equities)
-        date_str = (now - timedelta(days=random.randint(0, 3))).strftime("%Y-%m-%d")
-        shares = random.randint(10, 200) * 1000
-        price = random.uniform(50, 400)
-        is_buy = random.choice([True, False])
-        data.append({"Filing Date": date_str, "Company": tick, "Insider Title": random.choice(["CEO", "CFO", "Director"]), "Transaction": "PURCHASE (OPEN MARKET) 🟢" if is_buy else "10b5-1 SALE 🔴", "Shares": f"{shares:,}", "Avg Price": f"${price:.2f}", "Total Value": f"${(shares*price):,.0f}", "Context": "Live Streamed SEC Form 4"})
-    return pd.DataFrame(data).sort_values(by="Filing Date", ascending=False)
-
-def generate_live_dark_pool_data(watchlist):
-    data = []
-    now = datetime.now()
-    for _ in range(6):
-        tick = random.choice(watchlist)
-        time_str = (now - timedelta(minutes=random.randint(1, 45))).strftime("%H:%M:%S")
-        data.append({"Time": time_str, "Ticker": tick, "Block Size": f"${random.uniform(5.0, 45.0):.1f}M", "Price": f"{random.uniform(50, 300):.2f}", "Sentiment": random.choice(["BULLISH SWEEP 🟢", "BULLISH ABSORPTION 🟢", "BEARISH BLOCK 🔴"])})
-    return pd.DataFrame(data).sort_values(by="Time", ascending=False)
-
-def get_dynamic_fundamental_score(ticker):
-    resolved = resolve_asset_ticker(ticker)
-    if not yf: return {"score": 88, "recommendation": "BUY 🟢", "mcap": "$1.28 Trillion", "pe": "28.4x", "margin": "24.5%", "fair_value": "$152.00", "moat": "Wide Monopoly Moat", "summary": f"Live quantitative profile generated for {resolved}."}
-    try:
-        t = yf.Ticker(resolved)
-        info = t.info
-        mcap = info.get("marketCap", 0)
-        mcap_str = f"${mcap / 1e9:,.2f} Billion" if mcap >= 1e9 else (f"${mcap / 1e6:,.2f} Million" if mcap > 0 else "N/A")
-
-        if "forwardPE" in info or "profitMargins" in info:
-            fwd_pe = info.get("forwardPE", 25)
-            margins = info.get("profitMargins", 0.15)
-            rec_key = str(info.get("recommendationKey", "buy")).upper().replace("_", " ")
-            pe_ratio = f"{fwd_pe:.1f}x" if isinstance(fwd_pe, (int, float)) else "N/A"
-            margin_str = f"{margins * 100:.1f}%" if isinstance(margins, (int, float)) else "15.0%"
-            score = 60
-            if isinstance(margins, (int, float)) and margins > 0.20: score += 15
-            if isinstance(fwd_pe, (int, float)) and fwd_pe < 30: score += 15
-            health_score = min(99, max(40, score))
-            curr_price = get_live_price_fast(resolved) or info.get("currentPrice", 100)
-            fair_value = curr_price * (1 + (margins if isinstance(margins, (int, float)) else 0.15))
-            return {"score": health_score, "recommendation": f"{rec_key} 🟢", "mcap": mcap_str, "pe": pe_ratio, "margin": margin_str, "fair_value": f"${fair_value:,.2f}", "moat": "Wide Monopoly Moat" if health_score >= 85 else "Narrow Moat", "summary": str(info.get("longBusinessSummary", f"Quantitative profile for {resolved}."))[:350] + "..."}
-        else:
-            return {"score": 85, "recommendation": "BUY 🟢", "mcap": mcap_str, "pe": "N/A", "margin": "N/A", "fair_value": "N/A", "moat": "Network Moat", "summary": f"Live monetary asset or commodity profile for {resolved}."}
-    except Exception:
-        return {"score": 82, "recommendation": "BUY 🟢", "mcap": "N/A", "pe": "N/A", "margin": "N/A", "fair_value": "N/A", "moat": "Institutional Moat", "summary": f"Live summary for {resolved}."}
-
-# --- INITIALIZE ENGINES & CONFIG ---
-engine = BrokerExecutionEngine()
-health = engine.check_account_health()
-wl_items = CloudDatabaseManager.get_watchlist()
-if not wl_items: wl_items = ["NVDA", "BTC-USD", "GC=F", "SPY"]
-is_autopilot, min_conf_threshold = get_autopilot_config_ui()
-
-# --- DYNAMIC M2M POSITIONS CALCULATIONS & FAST LIVE PRICE ENRICHMENT ---
-conn = get_db_conn()
-positions_df = pd.DataFrame()
-if conn:
-    try:
-        positions_df = pd.read_sql("SELECT * FROM demo_positions ORDER BY opened_at DESC;", conn)
-        conn.close()
-    except Exception: pass
-
-open_trades = positions_df[positions_df['status'] == 'OPEN'] if not positions_df.empty and 'status' in positions_df.columns else pd.DataFrame()
-closed_trades = positions_df[positions_df['status'] == 'CLOSED'] if not positions_df.empty and 'status' in positions_df.columns else pd.DataFrame()
-
-realized_pnl = closed_trades['pnl'].sum() if not closed_trades.empty and 'pnl' in closed_trades.columns else 0.0
-unrealized_pnl, allocated_margin = 0.0, 0.0
-
-enriched_open_trades = pd.DataFrame()
-is_weekend_now = datetime.now().weekday() in [5, 6]
-
-if not open_trades.empty:
-    open_rows = []
-    for idx, row in open_trades.iterrows():
-        try:
-            r_dict = row.to_dict()
-            tick = str(r_dict['ticker'])
-            qty = float(r_dict['qty'])
-            entry = float(r_dict['entry_price'])
-            act = str(r_dict['action']).upper()
-            
-            allocated_margin += (entry * qty)
-            
-            # Sub-second live price engine (Binance API for crypto, Fast Yahoo for stocks)
-            curr_price = get_live_price_fast(tick) or entry
-            
-            trade_pnl = (curr_price - entry) * qty if act == "BUY" else (entry - curr_price) * qty
-            pnl_pct = ((curr_price - entry) / entry * 100) if act == "BUY" else ((entry - curr_price) / entry * 100)
-            unrealized_pnl += trade_pnl
-            
-            if "-USD" in tick or "BTC" in tick or "ETH" in tick or "SOL" in tick or "DOGE" in tick:
-                r_dict['Market Status'] = "🟢 LIVE 24/7"
-            else:
-                r_dict['Market Status'] = "🔴 CLOSED (MON OPEN)" if is_weekend_now else "🟢 LIVE REGULAR"
-                
-            r_dict['Live Price ($)'] = f"${curr_price:,.2f}"
-            r_dict['Unrealized P&L ($)'] = f"+${trade_pnl:,.2f}" if trade_pnl >= 0 else f"-${abs(trade_pnl):,.2f}"
-            r_dict['Return (%)'] = f"{pnl_pct:+.2f}%"
-            open_rows.append(r_dict)
-        except Exception:
-            pass
-    enriched_open_trades = pd.DataFrame(open_rows)
-
-starting_balance = 100000.0
-live_equity = starting_balance + realized_pnl + unrealized_pnl
-buying_power = max(0.0, (live_equity * 2.0) - allocated_margin)
-
-# --- CSS STYLING WITH EMERALD/SLATE LOGO ACCENTS ---
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@600;900&family=Inter:wght@300;400;600&display=swap');
+# =====================================================================
+# ADAPTIVE MULTI-STRATEGY ENSEMBLE ENGINE
+# =====================================================================
+def evaluate_multi_strategy_ensemble(conn, ticker, df):
+    if len(df) < 20: return False, 0, "Insufficient Data", ""
     
-    .stApp { 
-        background-color: #0B0E14; 
-        color: #E6EDF3; 
-        font-family: 'Inter', sans-serif; 
-    }
+    triggered_strats = []
     
-    .brand-title { 
-        font-family: 'Orbitron', sans-serif; 
-        font-weight: 900; 
-        font-size: 2.2rem; 
-        background: linear-gradient(135deg, #00FFB2 0%, #00C896 50%, #38BDF8 100%); 
-        -webkit-background-clip: text; 
-        -webkit-text-fill-color: transparent; 
-    }
+    # 1. Evaluate all 5 strategy models in parallel
+    s1_hit, s1_score, s1_msg = strat_01_ict_liquidity_sweep(df)
+    if s1_hit: triggered_strats.append((s1_score, "ICT Liquidity Sweep", s1_msg))
     
-    .status-badge { 
-        background: #151A24; 
-        border: 1px solid rgba(0, 255, 178, 0.2); 
-        border-radius: 6px; 
-        padding: 6px 12px; 
-        font-size: 0.82rem; 
-        font-family: monospace; 
-    }
+    s2_hit, s2_score, s2_msg = strat_02_donchian_breakout(df)
+    if s2_hit: triggered_strats.append((s2_score, "Donchian Volatility Breakout", s2_msg))
     
-    .level-card { 
-        background: #151A24; 
-        border: 1px solid rgba(0, 255, 178, 0.2); 
-        border-radius: 8px; 
-        padding: 15px; 
-        text-align: center; 
-    }
+    s3_hit, s3_score, s3_msg = strat_03_mean_reversion_vwap_squeeze(df)
+    if s3_hit: triggered_strats.append((s3_score, "Mean-Reversion Exhaustion", s3_msg))
     
-    .amd-card { 
-        background: #151A24; 
-        border-left: 4px solid #00FFB2; 
-        border-radius: 6px; 
-        padding: 12px; 
-        margin-bottom: 15px; 
-    }
+    s4_hit, s4_score, s4_msg = strat_04_order_flow_cvd_surge(df)
+    if s4_hit: triggered_strats.append((s4_score, "Order Flow CVD Surge", s4_msg))
     
-    .news-tag { 
-        background: #1E293B; 
-        color: #00FFB2; 
-        padding: 3px 8px; 
-        border-radius: 4px; 
-        font-size: 0.75rem; 
-        font-weight: bold; 
-        font-family: monospace; 
-    }
-
-    .stButton > button[kind="primary"] {
-        background: linear-gradient(135deg, #00C896 0%, #00FFB2 100%) !important;
-        color: #0B0E14 !important;
-        font-weight: 700 !important;
-        border: none !important;
-        box-shadow: 0 0 12px rgba(0, 255, 178, 0.3) !important;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# --- HEADER BAR ---
-col_head1, col_head2 = st.columns([2, 1])
-with col_head1: st.markdown("<div class='brand-title'>NEXUS QUANT TERMINAL</div>", unsafe_allow_html=True)
-with col_head2:
-    col_stat1, col_stat2 = st.columns([3, 1])
-    with col_stat1:
-        st.markdown(f"""
-        <div style='text-align: right;'>
-            <span class='status-badge'>AUTOPILOT: <b style='color:{"#00FFB2" if is_autopilot else "#FF4D4D"};'>{"ACTIVE 🟢" if is_autopilot else "OFF 🔴"}</b></span>
-            <span class='status-badge' style='margin-left:8px;'>DATABASE: <b style='color:#00FFB2;'>LIVE 🟢</b></span>
-        </div>
-        """, unsafe_allow_html=True)
-    with col_stat2:
-        if st.button("🔒 Lock", type="secondary", use_container_width=True):
-            st.session_state.authenticated = False
-            st.query_params.clear()
-            st.rerun()
-
-st.divider()
-
-# --- TICKER TAPE ---
-components.html(f"""
-<div class="tradingview-widget-container" style="margin-top: 5px; margin-bottom: 20px;">
-  <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-ticker-tape.js" async>
-  {{ "symbols": {json.dumps([{"proName": get_tv_symbol(s), "title": get_clean_symbol(s)} for s in wl_items])}, "colorTheme": "dark", "isTransparent": true, "displayMode": "adaptive", "locale": "en" }}
-  </script>
-</div>
-""", height=100)
-
-# --- LIVE METRICS ROW ---
-m1, m2, m3, m4 = st.columns(4)
-pnl_total = realized_pnl + unrealized_pnl
-pnl_pct = (pnl_total / starting_balance) * 100.0
-m1.metric("ACCOUNT EQUITY", f"${live_equity:,.2f}", f"{pnl_total:+,.2f} ({pnl_pct:+.2f}%)")
-m2.metric("BUYING POWER", f"${buying_power:,.2f}")
-m3.metric("UNREALIZED P&L", f"${unrealized_pnl:,.2f}", f"Active Trades: {len(open_trades)}")
-m4.metric("SYSTEM RISK", "0.00%", "Circuit Breaker Safe 🟢")
-
-st.divider()
-
-# --- 8 CONSOLIDATED SINGLE-WORD MASTER TABS ---
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-    "Dashboard", 
-    "Radar", 
-    "Portfolio", 
-    "Macro", 
-    "Vault", 
-    "Backtest", 
-    "Challenge", 
-    "Settings"
-])
-
-# ==========================================
-# TAB 01: DASHBOARD
-# ==========================================
-with tab1:
-    st.subheader("🌐 Global Market Overview & Cloud Watchlist Grid")
-    col_cat, col_dd, col_search, col_fav, col_tf = st.columns([1.2, 1.2, 2, 1, 0.8])
-    with col_cat: cat_select = st.selectbox("Asset Class:", ["All Assets", "Equities", "Crypto", "Commodities", "Forex"])
+    s5_hit, s5_score, s5_msg = strat_05_cross_asset_relative_strength(ticker, df)
+    if s5_hit: triggered_strats.append((s5_score, "Cross-Asset RS Alpha", s5_msg))
     
-    asset_dict = {
-        "Equities": ["NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "GOOGL", "PLTR", "AMD", "MSTR", "COIN", "SPY", "QQQ", "IWM", "NFLX", "INTC", "DIS", "BA", "JPM", "GS", "V", "MA", "UNH", "JNJ", "XOM", "CVX", "WMT", "COST", "HD", "PG"],
-        "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD", "AVAX-USD", "LINK-USD", "ADA-USD", "XRP-USD", "DOT-USD", "NEAR-USD", "SUI-USD", "APT-USD", "SHIB-USD", "LTC-USD", "UNI-USD", "PEPE-USD", "BCH-USD", "TAO-USD", "RENDER-USD", "INJ-USD"],
-        "Commodities": ["GC=F", "CL=F", "SI=F", "NG=F", "HG=F", "PL=F", "PA=F", "ZC=F", "ZW=F", "ZS=F"],
-        "Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "USDCHF=X", "NZDUSD=X", "EURGBP=X", "EURJPY=X", "GBPJPY=X", "AUDJPY=X", "CADJPY=X", "EURAUD=X", "GBPCHF=X", "EURCHF=X"]
-    }
-    
-    dd_options = asset_dict.get(cat_select, asset_dict["Equities"] + asset_dict["Crypto"])
-    if cat_select == "All Assets": 
-        dd_options = ["NVDA", "BTC-USD", "GC=F", "SPY", "QQQ", "AAPL", "TSLA", "AMD", "MSFT", "ETH-USD", "SOL-USD", "DOGE-USD", "EURUSD=X"]
-    
-    with col_dd: dd_sym = st.selectbox("Asset Select:", dd_options, format_func=lambda x: get_clean_symbol(x))
-    with col_search: search_sym = st.text_input("Search Symbol or Asset Name:", placeholder="e.g. Nvidia, Bitcoin, Dogecoin, Tesla, Gold, Euro...")
-    with col_fav:
-        st.write(" "); st.write(" ")
-        active_sym = resolve_asset_ticker(search_sym) if search_sym.strip() else dd_sym
-        if st.button("⭐ Add to Watchlist", type="primary", use_container_width=True):
-            CloudDatabaseManager.add_to_watchlist(active_sym)
-            st.success(f"Added {get_clean_symbol(active_sym)}!")
-    with col_tf: chart_tf = st.selectbox("Interval:", ["1", "5", "15", "60", "240", "D"], index=2, format_func=lambda x: {"1":"1m","5":"5m","15":"15m","60":"1h","240":"4h","D":"1D"}[x])
-
-    tv_symbol = get_tv_symbol(active_sym)
-    clean_disp = get_clean_symbol(active_sym)
-    logo_disp = get_logo_html(active_sym, size=28)
-    
-    if search_sym:
-        st.caption(f"🔍 Searched: **{search_sym}** &nbsp;➔&nbsp; Auto-Resolved: **{clean_disp} ({active_sym})**", unsafe_allow_html=True)
+    if not triggered_strats:
+        return False, 0, "No Strategy Model Triggered", ""
         
-    st.markdown(f"### {logo_disp} Live Chart: **{clean_disp}**", unsafe_allow_html=True)
+    triggered_strats.sort(key=lambda x: x[0], reverse=True)
+    primary_score, primary_name, primary_msg = triggered_strats[0]
     
-    components.html(f"""
-    <div class="tradingview-widget-container" style="height:520px;width:100%">
-      <div id="tv_home_chart" style="height:520px;width:100%"></div>
-      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-      <script type="text/javascript">
-      new TradingView.widget({{ "autosize": true, "symbol": "{tv_symbol}", "interval": "{chart_tf}", "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "toolbar_bg": "#0B0E14", "enable_publishing": false, "allow_symbol_change": true, "container_id": "tv_home_chart" }});
-      </script>
-    </div>
-    """, height=530)
-
-    st.divider()
+    multi_strat_boost = (len(triggered_strats) - 1) * 5
+    inst_boost, inst_reasons = evaluate_options_and_sec_flow(ticker)
     
-    st.markdown("### ⭐ Active Watchlist Grid (Neon Cloud Synced)")
-    col_wadd1, col_wadd2 = st.columns([3, 1])
-    with col_wadd1: new_symbol = st.text_input("Quick Add Ticker to Cloud Watchlist:", placeholder="e.g. TSLA, AMD, Dogecoin")
-    with col_wadd2:
-        st.write(" "); st.write(" ")
-        if st.button("➕ Quick Add", type="primary") and new_symbol:
-            CloudDatabaseManager.add_to_watchlist(resolve_asset_ticker(new_symbol))
-            st.rerun()
-
-    w_cols = st.columns(2)
-    for idx, item in enumerate(wl_items):
-        with w_cols[idx % 2]:
-            st.markdown(f"<div style='background:#151A24; border:1px solid rgba(0, 255, 178, 0.15); border-radius:10px; padding:12px; margin-bottom:10px;'>{get_logo_html(item, 28)}<span style='font-size:1.3rem; font-weight:bold;'>{get_clean_symbol(item)}</span></div>", unsafe_allow_html=True)
-            components.html(f"""
-            <div class="tradingview-widget-container" style="height:220px;">
-              <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js" async>
-              {{"symbol": "{get_tv_symbol(item)}", "width": "100%", "height": "220", "locale": "en", "dateRange": "1M", "colorTheme": "dark", "isTransparent": true}}
-              </script>
-            </div>
-            """, height=230)
-            if st.button(f"❌ Remove {get_clean_symbol(item)}", key=f"del_{item}"):
-                CloudDatabaseManager.remove_from_watchlist(item)
-                st.rerun()
-
-# ==========================================
-# TAB 02: RADAR (FULL AI SETUP MATRIX RESTORED)
-# ==========================================
-with tab2:
-    st.subheader("🎯 Real-Time AI Trade Signals, Multi-Strategy Ensemble & Execution Matrix")
+    final_conf = min(99, primary_score + multi_strat_boost + inst_boost)
     
-    col_sc1, col_sc2 = st.columns([2, 1])
-    with col_sc1:
-        c_filt1, c_filt2 = st.columns([1.2, 2.8])
-        with c_filt1: min_conf = st.slider("Minimum Confidence Filter (%)", min_value=50, max_value=100, value=80)
-        with c_filt2: horizon_filter = st.radio("Timeframe / Horizon:", ["All Horizons", "Scalp", "Swing", "Long"], horizontal=True)
-    with col_sc2:
-        st.write(" "); st.write(" ")
-        if st.button("⚡ TRIGGER LIVE MARKET SCAN NOW", type="primary", use_container_width=True):
-            if trigger_live_market_scan():
-                st.success("✅ Multi-Strategy Scan Completed! Executed across live pairs.")
-                st.rerun()
-
-    setups_df = CloudDatabaseManager.get_setups_df()
-    if not setups_df.empty:
-        filtered_df = setups_df[setups_df["Confidence (%)"] >= min_conf]
-        if horizon_filter != "All Horizons":
-            filtered_df = filtered_df[filtered_df["Horizon"].str.contains(horizon_filter, case=False, na=False)]
-        display_df = filtered_df.copy()
-        if not display_df.empty:
-            display_df["Ticker"] = display_df["Ticker"].apply(lambda x: get_clean_symbol(x))
-            event = st.dataframe(display_df, use_container_width=True, on_select="rerun", selection_mode="single-row", hide_index=True)
-            selected_idx = event.selection["rows"][0] if event and hasattr(event, "selection") and event.selection.get("rows") else 0
-            selected_row = filtered_df.iloc[selected_idx]
-            raw_ticker = str(selected_row["Ticker"])
-        else:
-            raw_ticker = "BTC-USD" if datetime.now().weekday() in [5, 6] else "NVDA"
-            selected_row = {"Entry": 64200.0, "Stop Loss": 63100.0, "Target": 67500.0, "Pattern": "ICT Liquidity Sweep", "Action": "BUY", "Confidence (%)": 88}
-    else:
-        raw_ticker = "BTC-USD" if datetime.now().weekday() in [5, 6] else "NVDA"
-        selected_row = {"Entry": 64200.0, "Stop Loss": 63100.0, "Target": 67500.0, "Pattern": "ICT Liquidity Sweep", "Action": "BUY", "Confidence (%)": 88}
-
-    selected_ticker = get_clean_symbol(raw_ticker)
-    trade_side = str(selected_row.get("Action", "BUY")).upper()
-    pattern_name = str(selected_row.get("Pattern", "Ensemble Confluence"))
-
-    st.divider()
+    strat_list_str = " + ".join([s[1] for s in triggered_strats])
+    rationales = [primary_msg] + inst_reasons
+    full_rationale = f"Ensemble Signal ({strat_list_str}) | " + " | ".join(rationales)
     
-    st.markdown("### 🏦 Institutional A-M-D Phase & Liquidity Flow")
-    amd_phase = "Manipulation (Liquidity Stop Run) 🛑" if "Sweep" in pattern_name else "Distribution (Markup Phase) 📈"
-    cvd_val = "+$14.2M (Aggressive Buying)" if trade_side == "BUY" else "-$12.5M (Aggressive Selling)"
-    
-    col_amd1, col_amd2 = st.columns(2)
-    with col_amd1: st.markdown(f"<div class='amd-card'><span style='color:#8B949E;'>Current Market Cycle Phase</span><br><b style='font-size:1.2rem; color:#38BDF8;'>{amd_phase}</b></div>", unsafe_allow_html=True)
-    with col_amd2: st.markdown(f"<div class='amd-card'><span style='color:#8B949E;'>Order Flow CVD Delta</span><br><b style='font-size:1.2rem; color:#00FFB2;'>{cvd_val}</b></div>", unsafe_allow_html=True)
+    return True, final_conf, full_rationale, primary_name
 
-    st.markdown(f"### {get_logo_html(raw_ticker, 28)} Interactive TradingView Signal Inspection: **{selected_ticker}**", unsafe_allow_html=True)
-    components.html(f"""<div class="tradingview-widget-container" style="height:480px;width:100%"><div id="tv_signal_chart" style="height:480px;width:100%"></div><script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script><script type="text/javascript">new TradingView.widget({{ "autosize": true, "symbol": "{get_tv_symbol(raw_ticker)}", "interval": "15", "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "toolbar_bg": "#0B0E14", "enable_publishing": false, "allow_symbol_change": false, "container_id": "tv_signal_chart" }});</script></div>""", height=490)
-    
-    e_val = float(selected_row.get("Entry", 128.50))
-    sl_val = float(selected_row.get("Stop Loss", 125.00))
-    tp_val = float(selected_row.get("Target", 139.70))
-    conf_score = int(selected_row.get("Confidence (%)", 85))
-    
-    c_l1, c_l2, c_l3, c_l4, c_l5 = st.columns(5)
-    c_l1.markdown(f"<div class='level-card'><span style='color:#38BDF8;'>ENTRY PRICE</span><br><b>${e_val:,.2f}</b></div>", unsafe_allow_html=True)
-    c_l2.markdown(f"<div class='level-card'><span style='color:#FF4D4D;'>STOP LOSS</span><br><b>${sl_val:,.2f}</b></div>", unsafe_allow_html=True)
-    c_l3.markdown(f"<div class='level-card'><span style='color:#00FFB2;'>TARGET PROFIT</span><br><b>${tp_val:,.2f}</b></div>", unsafe_allow_html=True)
-    c_l4.markdown(f"<div class='level-card'><span style='color:#38BDF8;'>KEY SUPPORT</span><br><b>${e_val*0.97:,.2f}</b></div>", unsafe_allow_html=True)
-    c_l5.markdown(f"<div class='level-card'><span style='color:#F59E0B;'>KEY RESISTANCE</span><br><b>${tp_val*1.02:,.2f}</b></div>", unsafe_allow_html=True)
-
-    st.divider()
-
-    st.markdown(f"### ⚡ AI-Recommended Dynamic Bracket Order: **{selected_ticker}**")
-    risk_dist = abs(e_val - sl_val) if abs(e_val - sl_val) > 0 else (e_val * 0.02)
-    base_risk_budget = 2000.0 * (conf_score / 100.0)
-    recommended_qty = max(1.0, round(base_risk_budget / risk_dist, 2))
-    
-    col_ex1, col_ex2, col_ex3 = st.columns([1, 1.2, 1.5])
-    with col_ex1:
-        trade_qty = st.number_input("Shares / Quantity (AI Recommended):", min_value=0.01, value=float(recommended_qty), step=1.0, key="ai_matrix_qty")
-        st.caption(f"Confidence: **{conf_score}%** | Risk: **${(risk_dist * trade_qty):,.2f}**")
-    with col_ex2:
-        st.write(" "); st.write(" ")
-        st.markdown(f"**Side:** :green[**{trade_side}**]" if trade_side == "BUY" else f"**Side:** :red[**{trade_side}**]")
-        st.markdown(f"**Bracket SL / TP:** :red[${sl_val:,.2f}] &nbsp;/&nbsp; :green[${tp_val:,.2f}]")
-    with col_ex3:
-        st.write(" "); st.write(" ")
-        exec_btn_label = f"🚀 EXECUTE {trade_side} {trade_qty:.2f} {selected_ticker} @ ${e_val:,.2f}"
-        if is_autopilot:
-            st.warning("⚠ Autopilot is ACTIVE. Manual execution is locked to prevent duplicate orders.")
-        else:
-            if st.button(exec_btn_label, type="primary", use_container_width=True, key="ai_matrix_exec_btn"):
-                init_all_tables()
-                exec_conn = get_db_conn()
-                if exec_conn:
-                    try:
-                        with exec_conn.cursor() as cur:
-                            cur.execute("""INSERT INTO demo_positions (ticker, action, qty, entry_price, stop_loss, take_profit, strategy, status, opened_at) VALUES (%s, %s, %s, %s, %s, %s, %s, 'OPEN', CURRENT_TIMESTAMP);""", (raw_ticker, trade_side, trade_qty, e_val, sl_val, tp_val, pattern_name))
-                            exec_conn.commit()
-                        exec_conn.close()
-                        st.success(f"✅ Trade Saved to Neon Postgres! Opening {trade_qty} shares of {selected_ticker}"); st.rerun()
-                    except Exception as ex: st.error(f"Execution Error: {ex}")
-
-# ==========================================
-# TAB 03: PORTFOLIO
-# ==========================================
-with tab3:
-    st.subheader("⚡ Portfolio Performance & Executed Trade History")
-    pm1, pm2, pm3, pm4 = st.columns(4)
-    pm1.metric("REALIZED DEMO P&L", f"${realized_pnl:,.2f}", delta=f"${realized_pnl:,.2f}" if realized_pnl != 0 else None)
-    pm2.metric("ACTIVE OPEN TRADES", len(open_trades))
-    pm3.metric("CLOSED TRADES LOGGED", len(closed_trades))
-    pm4.metric("STRATEGY WIN RATE", "Tracking..." if closed_trades.empty else f"{(len(closed_trades[closed_trades['pnl']>0]) / len(closed_trades) * 100):.1f}%")
-    st.divider()
-
-    st.markdown("### 🟢 Active Open Demo Positions (Real-Time Live Prices, Market Status & P&L)")
-    
-    # Renders active portfolio with sub-second live price updates
-    @st.fragment(run_every=2)
-    def render_live_portfolio_feed():
-        conn = get_db_conn()
-        positions_df = pd.DataFrame()
-        if conn:
-            try:
-                positions_df = pd.read_sql("SELECT * FROM demo_positions WHERE status = 'OPEN' ORDER BY opened_at DESC;", conn)
-                conn.close()
-            except Exception: pass
+# --- ACTIVE POSITIONS MONITOR ---
+def monitor_open_positions(conn):
+    if not conn: return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, ticker, action, qty, entry_price, stop_loss, take_profit, strategy FROM demo_positions WHERE status = 'OPEN'")
+            open_positions = cur.fetchall()
             
-        if not positions_df.empty:
-            open_rows = []
-            for idx, row in positions_df.iterrows():
+            for pos in open_positions:
+                pos_id, ticker, action, qty, entry, sl, tp, strat = pos
                 try:
-                    r_dict = row.to_dict()
-                    tick = str(r_dict['ticker'])
-                    qty = float(r_dict['qty'])
-                    entry = float(r_dict['entry_price'])
-                    act = str(r_dict['action']).upper()
+                    curr_price = get_live_price_fast_scanner(ticker)
+                    if not curr_price: continue
                     
-                    # Pull sub-second live tick via Binance API
-                    live_p = get_live_price_fast(tick) or entry
-                    trade_pnl = (live_p - entry) * qty if act == "BUY" else (entry - live_p) * qty
-                    pnl_pct = ((live_p - entry) / entry * 100) if act == "BUY" else ((entry - live_p) / entry * 100)
+                    closed = False
+                    exit_price = curr_price
                     
-                    if "-USD" in tick or "BTC" in tick or "ETH" in tick or "SOL" in tick or "DOGE" in tick:
-                        r_dict['Market Status'] = "🟢 LIVE 24/7"
-                    else:
-                        r_dict['Market Status'] = "🔴 CLOSED (MON OPEN)" if datetime.now().weekday() in [5, 6] else "🟢 LIVE REGULAR"
-                        
-                    r_dict['Live Price ($)'] = f"${live_p:,.2f}"
-                    r_dict['Unrealized P&L ($)'] = f"+${trade_pnl:,.2f}" if trade_pnl >= 0 else f"-${abs(trade_pnl):,.2f}"
-                    r_dict['Return (%)'] = f"{pnl_pct:+.2f}%"
-                    open_rows.append(r_dict)
-                except Exception: pass
-            
-            df_enriched = pd.DataFrame(open_rows)
-            open_cols = [c for c in ['opened_at', 'ticker', 'Market Status', 'action', 'qty', 'entry_price', 'Live Price ($)', 'Unrealized P&L ($)', 'Return (%)', 'stop_loss', 'take_profit', 'strategy'] if c in df_enriched.columns]
-            st.markdown(render_styled_table(df_enriched[open_cols], ticker_col="ticker"), unsafe_allow_html=True)
-        else:
-            st.info("No open trades currently active. Trigger a live market scan in Tab 02 to generate new trades!")
+                    if action == 'BUY':
+                        if curr_price >= tp: closed = True; exit_price = tp
+                        elif curr_price <= sl: closed = True; exit_price = sl
+                    elif action == 'SELL':
+                        if curr_price <= tp: closed = True; exit_price = tp
+                        elif curr_price >= sl: closed = True; exit_price = sl
+                            
+                    if closed:
+                        pnl = (exit_price - entry) * qty if action == 'BUY' else (entry - exit_price) * qty
+                        cur.execute("""
+                            UPDATE demo_positions 
+                            SET status = 'CLOSED', exit_price = %s, pnl = %s, closed_at = CURRENT_TIMESTAMP 
+                            WHERE id = %s
+                        """, (exit_price, pnl, pos_id))
+                        print(f"🏁 [TRADE CLOSED] {ticker} ({strat}) Exit: ${exit_price:.2f} | PnL: ${pnl:+.2f}")
+                except Exception as ex:
+                    print(f"[MONITOR ERROR] {ticker}: {ex}")
+            conn.commit()
+    except Exception as e:
+        print(f"[MONITOR SYSTEM ERROR] {e}")
 
-    render_live_portfolio_feed()
-
-    st.divider()
-    st.markdown("### 📜 Executed Trade History & Realized P&L")
-    if not closed_trades.empty:
-        closed_display = closed_trades.copy()
-        closed_display['ticker'] = closed_display['ticker'].apply(lambda x: get_clean_symbol(x))
-        closed_cols = [c for c in ['closed_at', 'ticker', 'action', 'qty', 'entry_price', 'exit_price', 'pnl', 'strategy'] if c in closed_display.columns]
-        st.markdown(render_styled_table(closed_display[closed_cols], ticker_col="ticker"), unsafe_allow_html=True)
-    else: st.caption("No closed trades logged yet.")
-
-# ==========================================
-# TAB 04: MACRO (3D SHELL & INTELLIGENCE)
-# ==========================================
-with tab4:
-    st.subheader("🐋 Institutional Research: Dynamic Scorecard, 3D Neural Torus & Macro Flow")
+# --- MASTER SCANNER ENGINE ENTRYPOINT ---
+def scan_markets():
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    conn = get_db_connection()
+    config = get_autopilot_config(conn)
     
-    # 3D Neural Torus Component
-    st.markdown("##### 🌐 Unified Market Neural Mesh (\"The Shell\")")
-    threejs_component = """
-    <html>
-      <head><style>body { margin: 0; background: transparent; overflow: hidden; }</style></head>
-      <body>
-        <div id="container"></div>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-        <script>
-          let scene, camera, renderer, particles;
-          function init() {
-            scene = new THREE.Scene();
-            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            camera.position.z = 8;
-            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            document.body.appendChild(renderer.domElement);
-            
-            const geometry = new THREE.TorusGeometry(4, 1.5, 20, 80);
-            const material = new THREE.PointsMaterial({ size: 0.04, color: 0x00FFB2, transparent: true, opacity: 0.8 });
-            particles = new THREE.Points(geometry, material);
-            scene.add(particles);
-          }
-          function animate() {
-            requestAnimationFrame(animate);
-            particles.rotation.y += 0.003;
-            particles.rotation.x += 0.001;
-            renderer.render(scene, camera);
-          }
-          init(); animate();
-        </script>
-      </body>
-    </html>
-    """
-    components.html(threejs_component, height=300)
+    # Monitor and update open positions
+    monitor_open_positions(conn)
 
-    st.divider()
+    is_weekend = datetime.now().weekday() in [5, 6]
+    crypto_universe = [
+        "BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD", "AVAX-USD", "LINK-USD", 
+        "ADA-USD", "XRP-USD", "DOT-USD", "NEAR-USD", "SUI-USD", "APT-USD", 
+        "SHIB-USD", "LTC-USD", "UNI-USD", "PEPE-USD", "BCH-USD", "TAO-USD",
+        "RENDER-USD", "INJ-USD", "FET-USD", "SEI-USD", "TIA-USD", "STX-USD"
+    ]
+    equity_universe = ["NVDA", "AAPL", "MSFT", "PLTR", "AMD", "SPY", "QQQ", "TSLA", "AMZN", "META", "COIN", "MSTR"]
+    
+    active_universe = crypto_universe if is_weekend else (crypto_universe + equity_universe)
+    print(f"\n[NEXUS QUANT {now_str}] Ensemble Engine | Regime: {'24/7 WEEKEND CRYPTO' if is_weekend else 'REGULAR MARKET'} | Universe: {len(active_universe)} Assets")
+
+    for ticker in active_universe:
+        try:
+            df = yf.Ticker(ticker).history(period="5d", interval="15m")
+            if len(df) < 20: continue
+            
+            close = get_live_price_fast_scanner(ticker) or float(df['Close'].iloc[-1])
+            
+            valid_setup, win_prob, rationale, primary_strategy = evaluate_multi_strategy_ensemble(conn, ticker, df)
+            
+            if valid_setup:
+                sl = round(close * 0.98, 2)
+                tp = round(close * 1.05, 2)
+                
+                process_execution(
+                    conn, config, ticker=ticker, action="BUY", 
+                    entry=close, sl=sl, tp=tp, win_prob=win_prob, 
+                    strategy=primary_strategy, rationale=rationale
+                )
+        except Exception as e:
+            print(f"[SCAN ERROR] {ticker}: {e}")
+
+    if conn: conn.close()
+
+def process_execution(conn, config, ticker, action, entry, sl, tp, win_prob, strategy, rationale):
+    if not conn: return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO signals (horizon, ticker, pattern, confidence, win_prob, risk_reward, entry, stop_loss, target, action, rationale, strategy)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, ("15m Adaptive", ticker, strategy, win_prob, win_prob - 3, "1:2.5", entry, sl, tp, action, rationale, strategy))
+            
+            min_conf = config.get("min_conf", 80)
+            is_active = config.get("active", False)
+            
+            if is_active and win_prob >= min_conf:
+                cur.execute("SELECT id FROM demo_positions WHERE ticker = %s AND status = 'OPEN'", (ticker,))
+                if not cur.fetchone():
+                    risk_dist = abs(entry - sl) if abs(entry - sl) > 0 else (entry * 0.01)
+                    qty = max(1.0, round((2000.0 * (win_prob / 100.0)) / risk_dist, 2))
+                    
+                    cur.execute("""
+                        INSERT INTO demo_positions (ticker, action, qty, entry_price, stop_loss, take_profit, strategy, status, opened_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, 'OPEN', CURRENT_TIMESTAMP);
+                    """, (ticker, action, qty, entry, sl, tp, strategy))
+                    print(f"🚀 [ENSEMBLE AUTOPILOT] {action} {qty} {ticker} @ ${entry:,.2f} | Strategy: {strategy} | Win Prob: {win_prob}% >= Min: {min_conf}%")
+            conn.commit()
+    except Exception as e:
+        print(f"[EXECUTION ERROR] {e}")
+
+# --- STANDALONE DAEMON EXECUTION BLOCK ---
+if __name__ == "__main__":
+    print("⚡ [NEXUS QUANT] Running Standalone Market Scanner...")
+    scan_markets()
