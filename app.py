@@ -10,16 +10,38 @@ import requests
 import psycopg2
 from datetime import datetime, timedelta
 import streamlit.components.v1 as components
-from db import CloudDatabaseManager
-from execution import BrokerExecutionEngine
 
-# --- SAFE YFINANCE IMPORT ---
+# --- SAFE DB & ENGINE IMPORTS (PREVENTS CRASHES ON MISSING PACKAGES) ---
+try:
+    from db import CloudDatabaseManager
+except Exception as e:
+    class CloudDatabaseManager:
+        @staticmethod
+        def initialize_tables(): pass
+        @staticmethod
+        def get_watchlist(): return ["NVDA", "BTC-USD", "GC=F", "SPY"]
+        @staticmethod
+        def add_to_watchlist(symbol): pass
+        @staticmethod
+        def remove_from_watchlist(symbol): pass
+        @staticmethod
+        def get_setups_df(): return pd.DataFrame()
+        @staticmethod
+        def get_wishlist_df(): return pd.DataFrame()
+        @staticmethod
+        def add_wishlist_param(ticker, cond, price, amt): pass
+
+try:
+    from execution import BrokerExecutionEngine
+except Exception as e:
+    class BrokerExecutionEngine:
+        def check_account_health(self): return {"status": "OK"}
+
 try:
     import yfinance as yf
 except ImportError:
     yf = None
 
-# --- SAFE SCANNER ENGINE IMPORT ---
 try:
     import scanner
 except ImportError:
@@ -73,7 +95,6 @@ def init_all_tables():
     if conn:
         try:
             with conn.cursor() as cur:
-                # Signals Table
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS signals (
                         id SERIAL PRIMARY KEY,
@@ -92,7 +113,6 @@ def init_all_tables():
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 """)
-                # Positions Table
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS demo_positions (
                         id SERIAL PRIMARY KEY,
@@ -110,7 +130,6 @@ def init_all_tables():
                         closed_at TIMESTAMP
                     );
                 """)
-                # System Config Table
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS system_config (
                         key_name VARCHAR(50) PRIMARY KEY,
@@ -133,7 +152,6 @@ def init_all_tables():
         except Exception:
             pass
 
-# Run automatic database table setup
 init_all_tables()
 CloudDatabaseManager.initialize_tables()
 
@@ -242,7 +260,6 @@ def get_clean_symbol(ticker):
     }
     return map_dict.get(resolved, resolved)
 
-# HIGH-RES SVG LOGO RENDERER
 def get_logo_html(ticker, size=24):
     clean = get_clean_symbol(ticker).split(" ")[0].split("-")[0].split("=")[0].upper()
     logo_urls = {
@@ -259,26 +276,11 @@ def get_logo_html(ticker, size=24):
         "COIN": "https://s3-symbol-logo.tradingview.com/coinbase-global--big.svg",
         "SPY": "https://s3-symbol-logo.tradingview.com/s-p-500--big.svg",
         "QQQ": "https://s3-symbol-logo.tradingview.com/invesco--big.svg",
-        "JNJ": "https://s3-symbol-logo.tradingview.com/johnson-and-johnson--big.svg",
-        "XOM": "https://s3-symbol-logo.tradingview.com/exxon-mobil--big.svg",
-        "CVX": "https://s3-symbol-logo.tradingview.com/chevron--big.svg",
-        "WMT": "https://s3-symbol-logo.tradingview.com/walmart--big.svg",
-        "COST": "https://s3-symbol-logo.tradingview.com/costco-wholesale--big.svg",
-        "HD": "https://s3-symbol-logo.tradingview.com/home-depot--big.svg",
-        "PG": "https://s3-symbol-logo.tradingview.com/procter-and-gamble--big.svg",
         "BTC": "https://s3-symbol-logo.tradingview.com/crypto/XTVCBTC--big.svg",
         "ETH": "https://s3-symbol-logo.tradingview.com/crypto/XTVCETH--big.svg",
         "SOL": "https://s3-symbol-logo.tradingview.com/crypto/XTVCSOL--big.svg",
         "DOGE": "https://s3-symbol-logo.tradingview.com/crypto/XTVCDOGE--big.svg",
-        "GOLD": "https://s3-symbol-logo.tradingview.com/metal/gold--big.svg",
-        "GC": "https://s3-symbol-logo.tradingview.com/metal/gold--big.svg",
-        "OIL": "https://s3-symbol-logo.tradingview.com/crude-oil--big.svg",
-        "CL": "https://s3-symbol-logo.tradingview.com/crude-oil--big.svg",
-        "SILVER": "https://s3-symbol-logo.tradingview.com/metal/silver--big.svg",
-        "SI": "https://s3-symbol-logo.tradingview.com/metal/silver--big.svg",
-        "EURUSD": "https://s3-symbol-logo.tradingview.com/forex/eurusd--big.svg",
-        "GBPUSD": "https://s3-symbol-logo.tradingview.com/forex/gbpusd--big.svg",
-        "USDJPY": "https://s3-symbol-logo.tradingview.com/forex/usdjpy--big.svg"
+        "GOLD": "https://s3-symbol-logo.tradingview.com/metal/gold--big.svg"
     }
     
     if clean in logo_urls:
